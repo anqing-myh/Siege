@@ -552,8 +552,7 @@
     document.addEventListener('keydown', () => ensureAudioContext(), { once: true });
 
     // ---- 重置游戏 ----
-    function resetGame(isRemote = false) {
-        // 重置棋盘数据
+    function resetGame() {
         game.board = [];
         for (let r = 0; r < BOARD_SIZE; r++) {
             const row = [];
@@ -573,20 +572,9 @@
         game.winner = null;
         game.turnCount = 1;
         game.aiThinking = false;
-
-        // 【重要】保留当前模式（pvp/pve/p2p），不要重置
-        // game.mode 保留原值
-
         updateUI();
         drawBoard();
-
-        // 联机模式下，非远程触发则通知对手重置
-        if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN && !isRemote) {
-            wsSend({ type: 'reset' });
-        }
-
-        // 如果是人机模式且轮到电脑，启动 AI
-        if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) {
+        if (game.mode === 'pve' && game.currentPlayer === 1) {
             setTimeout(() => aiTurn(), 100);
         }
     }
@@ -667,47 +655,23 @@
         const oppRow = pl.row + dr, oppCol = pl.col + dc;
         if (isInBounds(oppRow, oppCol) && game.board[oppRow][oppCol].walls[oppDir]) return;
         if (!isInBounds(oppRow, oppCol)) return;
-
-        // 放置墙（本地立即生效）
         game.board[pl.row][pl.col].walls[dir] = true;
         if (isInBounds(oppRow, oppCol)) game.board[oppRow][oppCol].walls[oppDir] = true;
-
-        drawBoard();
-        playWallSound();
-
-        // 检查游戏是否结束
         const over = checkGameOver();
+        drawBoard();
         if (over) {
             if (game.mode === 'pve') {
                 if (game.winner === 0) playWinSound();
                 else if (game.winner === 1) playLoseSound();
             }
-            updateUI();
-            drawBoard();
-
-            // 联机模式：发送游戏结束消息（包含完整棋盘和赢家）
-            if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
-                wsSend({
-                    type: 'game_over',
-                    winner: game.winner,
-                    board: game.board,
-                    players: game.players,
-                    gameOver: true,
-                    turnCount: game.turnCount,
-                    phase: 'ended'
-                });
-            }
-            // 本地也要将 phase 改为 ended，防止继续操作
-            game.phase = 'ended';
+            updateUI(); drawBoard();
             return;
         }
-
-        // 未结束时，发送墙操作给对手
-        if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
+        playWallSound();
+        // 联机同步
+        if (game.mode === 'p2p' && ws && wsConnected) {
             wsSend({ type: 'action', action: 'wall', dir: dir });
         }
-
-        // 正常结束回合
         endTurn();
     }
 
@@ -1614,25 +1578,6 @@
         else if (msg.type === 'opponent_joined') {
             p2pStatus.textContent = '✅ 对手已加入！游戏开始';
             p2pStatus.style.color = '#5cb85c';
-
-            // 如果我是房主 (wsPlayerIndex === 0)，主动同步当前完整状态
-            if (wsPlayerIndex === 0 && ws && ws.readyState === WebSocket.OPEN) {
-                wsSend({
-                    type: 'sync',
-                    from: 0,
-                    state: {
-                        board: game.board,
-                        players: game.players,
-                        currentPlayer: game.currentPlayer,
-                        stepRemaining: game.stepRemaining,
-                        phase: game.phase,
-                        movePath: game.movePath,
-                        gameOver: game.gameOver,
-                        winner: game.winner,
-                        turnCount: game.turnCount
-                    }
-                });
-            }
         }
         else if (msg.type === 'opponent_left') {
             p2pStatus.textContent = '⚠️ 对手已离开';
@@ -1641,25 +1586,6 @@
         else if (msg.type === 'error') {
             p2pStatus.textContent = '❌ ' + msg.message;
             p2pStatus.style.color = '#ff6b6b';
-        }
-        else if (msg.type === 'game_over') {
-            // 完全应用对方发来的结束状态
-            game.board = msg.board;
-            game.players = msg.players;
-            game.gameOver = true;
-            game.winner = msg.winner;
-            game.turnCount = msg.turnCount || game.turnCount;
-            game.phase = msg.phase || 'ended';   // 强制结束阶段
-            game.mode = 'p2p';                   // 维持模式
-            game.aiThinking = false;             // 取消任何 AI 思考
-            updateUI();
-            drawBoard();
-
-            // 播放音效（根据本地玩家是否是赢家）
-            if (wsPlayerIndex !== null) {
-                if (game.winner === wsPlayerIndex) playWinSound();
-                else if (game.winner !== 'draw') playLoseSound();
-            }
         }
         else if (msg.type === 'sync') {
             // 接收方同步状态（房主重置后同步）
@@ -1677,10 +1603,6 @@
                 game.mode = 'p2p';
                 updateUI(); drawBoard();
             }
-        }
-        else if (msg.type === 'reset') {
-            // 远程重置，传入 true 避免再次发送消息
-            resetGame(true);
         }
         else if (msg.type === 'action') {
             // 对手操作
@@ -1775,7 +1697,7 @@
         });
     });
 
-    restartBtn.addEventListener('click', () => resetGame(false));
+    restartBtn.addEventListener('click', resetGame);
 
     // ---- 房间操作 ----
     createRoomBtn.addEventListener('click', () => {
