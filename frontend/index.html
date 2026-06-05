@@ -1612,11 +1612,37 @@
             p2pStatus.textContent = '🟢 已连接服务器';
             p2pStatus.style.color = '#5cb85c';
         };
-        ws.onmessage = (e) => {
-            try {
-                const msg = JSON.parse(e.data);
-                handleWSMessage(msg);
-            } catch(err) {}
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+
+            if (msg.type === 'reset_request') {
+                if (wsPlayerIndex === 0) {
+                    // 房主收到请求，执行重置并同步状态
+                    resetGame();
+                    ws.send(JSON.stringify({
+                        type: 'sync',
+                        from: 0,
+                        state: {
+                            board: game.board,
+                            players: game.players,
+                            currentPlayer: game.currentPlayer,
+                            stepRemaining: game.stepRemaining,
+                            phase: game.phase,
+                            movePath: game.movePath,
+                            gameOver: game.gameOver,
+                            winner: game.winner,
+                            turnCount: game.turnCount,
+                        }
+                    }));
+                }
+            } else if (msg.type === 'sync') {
+                if (msg.from === 0) {
+                    Object.assign(game, msg.state);
+                    updateUI();
+                    drawBoard();
+                }
+            }
+            // 其他消息处理
         };
         ws.onclose = () => {
             wsConnected = false;
@@ -1815,13 +1841,13 @@
     });
 
     restartBtn.addEventListener('click', () => {
-        if (game.mode === 'p2p' && ws && wsConnected) {
+        if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
             if (wsPlayerIndex === 0) {
-                // 房主直接重置并同步状态
-                resetGame(); 
-                wsSend({ 
-                    type: 'sync', 
-                    from: 0, 
+                // 房主直接重置并通知对方
+                resetGame();
+                ws.send(JSON.stringify({
+                    type: 'sync',
+                    from: 0,
                     state: {
                         board: game.board,
                         players: game.players,
@@ -1833,13 +1859,14 @@
                         winner: game.winner,
                         turnCount: game.turnCount,
                     }
-                });
+                }));
             } else {
-                // 加入者发起重置请求，等待房主响应
-                wsSend({ type: 'reset_request' });
+                // 加入者发送重置请求
+                ws.send(JSON.stringify({ type: 'reset_request' }));
+                // 这里可以加个UI提示，表明请求已发送，等待房主响应
             }
         } else {
-            // 非联机模式，直接重置
+            // 其他模式直接重置
             resetGame();
         }
     });
