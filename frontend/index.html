@@ -464,28 +464,103 @@
 
     // ---- UI ----
     function updateUI() {
-        stepDisplay.textContent = game.stepRemaining;
-        turnCounter.textContent = '回合 ' + game.turnCount;
-        const p = game.currentPlayer;
-        const names = game.mode === 'pvp' ? ['玩家1', '玩家2'] : ['您', '电脑'];
+    stepDisplay.textContent = game.stepRemaining;
+    turnCounter.textContent = '回合 ' + game.turnCount;
+    const p = game.currentPlayer;
+
+    if (game.mode === 'pvp') {
+        // 本地双人模式，玩家1红色，玩家2蓝色
+        player1Label.textContent = '玩家1';
+        player1Label.style.color = '#d13f3f';
+        player2Label.textContent = '玩家2';
+        player2Label.style.color = '#3a6ea5';
+
         if (game.gameOver) {
-            const winNames = game.mode === 'pvp' ? ['玩家1', '玩家2'] : ['您', '电脑'];
             let msg = '';
-            if (game.winner === 0) msg = '🔥 ' + winNames[0] + '获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
-            else if (game.winner === 1) msg = '🔥 ' + winNames[1] + '获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
-            else msg = '🤝 平局！双方区域相同';
+            if (game.winner === 0) {
+                msg = '🔥 玩家1获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
+            } else if (game.winner === 1) {
+                msg = '🔥 玩家2获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
+            } else {
+                msg = '🤝 平局！双方区域相同';
+            }
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text win-message';
             return;
         }
+
+        let msg = `玩家${p + 1} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
+        if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
+        else msg += ' (WASD移动, J放墙)';
+        statusMessage.textContent = msg;
         statusMessage.className = 'status-text';
+
+    } else if (game.mode === 'pve') {
+        // 人机模式，玩家红色“您”，蓝色“电脑”
+        player1Label.textContent = '您';
+        player1Label.style.color = '#d13f3f';
+        player2Label.textContent = '电脑';
+        player2Label.style.color = '#3a6ea5';
+
+        if (game.gameOver) {
+            let msg = '';
+            if (game.winner === 0) {
+                msg = '🔥 您获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
+            } else if (game.winner === 1) {
+                msg = '🔥 电脑获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
+            } else {
+                msg = '🤝 平局！双方区域相同';
+            }
+            statusMessage.textContent = msg;
+            statusMessage.className = 'status-text win-message';
+            return;
+        }
+
+        let msg = `${p === 0 ? '您' : '电脑'} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
+        if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
+        else msg += ' (WASD移动, J放墙)';
+        statusMessage.textContent = msg;
+        statusMessage.className = 'status-text';
+
+    } else if (game.mode === 'p2p') {
+        // 联机模式，“您”与“对方”颜色根据 wsPlayerIndex 分配
+        if (wsPlayerIndex === 0) {
+            // 自己为红色，另一方蓝色
+            player1Label.textContent = '您';
+            player1Label.style.color = '#d13f3f';
+            player2Label.textContent = '对方';
+            player2Label.style.color = '#3a6ea5';
+        } else if (wsPlayerIndex === 1) {
+            // 自己为蓝色，对方红色
+            player1Label.textContent = '对方';
+            player1Label.style.color = '#d13f3f';
+            player2Label.textContent = '您';
+            player2Label.style.color = '#3a6ea5';
+        }
+
+        const names = wsPlayerIndex === 0 ? ['您', '对方'] : ['对方', '您'];
+
+        if (game.gameOver) {
+            let msg = '';
+            if (game.winner === 0) {
+                msg = '🔥 ' + names[0] + '获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
+            } else if (game.winner === 1) {
+                msg = '🔥 ' + names[1] + '获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
+            } else {
+                msg = '🤝 平局！双方区域相同';
+            }
+            statusMessage.textContent = msg;
+            statusMessage.className = 'status-text win-message';
+            return;
+        }
+
         let msg = `${names[p]} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
         if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
         else msg += ' (WASD移动, J放墙)';
         statusMessage.textContent = msg;
-        player1Label.textContent = game.mode === 'pvp' ? '玩家1' : '您';
-        player2Label.textContent = game.mode === 'pvp' ? '玩家2' : '电脑';
+        statusMessage.className = 'status-text';
     }
+}
 
     // ---- 音效 ----
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1609,10 +1684,29 @@
         else if (msg.type === 'restart') {
             resetGame();
         }
+        else if (msg.type === 'reset_request') {
+            // 只有房主响应重置请求
+            if (wsPlayerIndex === 0) {
+                resetGame();
+                wsSend({ 
+                    type: 'sync', 
+                    from: 0, 
+                    state: {
+                        board: game.board,
+                        players: game.players,
+                        currentPlayer: game.currentPlayer,
+                        stepRemaining: game.stepRemaining,
+                        phase: game.phase,
+                        movePath: game.movePath,
+                        gameOver: game.gameOver,
+                        winner: game.winner,
+                        turnCount: game.turnCount,
+                    }
+                });
+            }
+        }
         else if (msg.type === 'sync') {
-            // 接收方同步状态（房主重置后同步）
-            if (msg.from === 0) { // 房主同步
-                // 直接应用状态
+            if (msg.from === 0) {
                 game.board = msg.state.board;
                 game.players = msg.state.players;
                 game.currentPlayer = msg.state.currentPlayer;
@@ -1623,7 +1717,8 @@
                 game.winner = msg.state.winner;
                 game.turnCount = msg.state.turnCount;
                 game.mode = 'p2p';
-                updateUI(); drawBoard();
+                updateUI();
+                drawBoard();
             }
         }
         else if (msg.type === 'action') {
@@ -1720,9 +1815,32 @@
     });
 
     restartBtn.addEventListener('click', () => {
-        resetGame();
         if (game.mode === 'p2p' && ws && wsConnected) {
-            wsSend({ type: 'restart' });
+            if (wsPlayerIndex === 0) {
+                // 房主直接重置并同步状态
+                resetGame(); 
+                wsSend({ 
+                    type: 'sync', 
+                    from: 0, 
+                    state: {
+                        board: game.board,
+                        players: game.players,
+                        currentPlayer: game.currentPlayer,
+                        stepRemaining: game.stepRemaining,
+                        phase: game.phase,
+                        movePath: game.movePath,
+                        gameOver: game.gameOver,
+                        winner: game.winner,
+                        turnCount: game.turnCount,
+                    }
+                });
+            } else {
+                // 加入者发起重置请求，等待房主响应
+                wsSend({ type: 'reset_request' });
+            }
+        } else {
+            // 非联机模式，直接重置
+            resetGame();
         }
     });
 
