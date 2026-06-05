@@ -577,6 +577,19 @@
         if (game.mode === 'pve' && game.currentPlayer === 1) {
             setTimeout(() => aiTurn(), 100);
         }
+                // resetGame() 末尾添加
+        if (game.mode === 'p2p' && ws && wsConnected && wsPlayerIndex === 0) {
+            wsSend({ type: 'sync', from: 0, state: {
+                board: game.board,
+                players: game.players,
+                currentPlayer: game.currentPlayer,
+                stepRemaining: game.stepRemaining,
+                phase: game.phase,
+                movePath: game.movePath,
+                gameOver: game.gameOver,
+                winner: game.winner,
+                turnCount: game.turnCount,}});
+        }
     }
 
     // ---- 移动逻辑 ----
@@ -657,6 +670,12 @@
         if (!isInBounds(oppRow, oppCol)) return;
         game.board[pl.row][pl.col].walls[dir] = true;
         if (isInBounds(oppRow, oppCol)) game.board[oppRow][oppCol].walls[oppDir] = true;
+
+        // 先同步，再判断游戏结束
+        if (game.mode === 'p2p' && ws && wsConnected) {
+            wsSend({ type: 'action', action: 'wall', dir: dir });
+        }       
+
         const over = checkGameOver();
         drawBoard();
         if (over) {
@@ -669,9 +688,9 @@
         }
         playWallSound();
         // 联机同步
-        if (game.mode === 'p2p' && ws && wsConnected) {
-            wsSend({ type: 'action', action: 'wall', dir: dir });
-        }
+        //if (game.mode === 'p2p' && ws && wsConnected) {
+        //    wsSend({ type: 'action', action: 'wall', dir: dir });
+        //}
         endTurn();
     }
 
@@ -1587,6 +1606,9 @@
             p2pStatus.textContent = '❌ ' + msg.message;
             p2pStatus.style.color = '#ff6b6b';
         }
+        else if (msg.type === 'restart') {
+            resetGame();
+        }
         else if (msg.type === 'sync') {
             // 接收方同步状态（房主重置后同步）
             if (msg.from === 0) { // 房主同步
@@ -1697,7 +1719,12 @@
         });
     });
 
-    restartBtn.addEventListener('click', resetGame);
+    restartBtn.addEventListener('click', () => {
+        resetGame();
+        if (game.mode === 'p2p' && ws && wsConnected) {
+            wsSend({ type: 'restart' });
+        }
+    });
 
     // ---- 房间操作 ----
     createRoomBtn.addEventListener('click', () => {
