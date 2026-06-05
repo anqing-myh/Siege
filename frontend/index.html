@@ -1687,6 +1687,8 @@
         else if (msg.type === 'reset_request') {
             // 只有房主响应重置请求
             if (wsPlayerIndex === 0) {
+                p2pStatus.textContent = '🔄 对手请求新游戏，已重置！';  // 新增提示
+                p2pStatus.style.color = '#5cb85c';
                 resetGame();
                 wsSend({ 
                     type: 'sync', 
@@ -1814,36 +1816,27 @@
         });
     });
 
-    restartBtn.addEventListener('click', () => {
-        if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
-            if (wsPlayerIndex === 0) {
-                // 房主直接重置并通知对方
-                resetGame();
-                ws.send(JSON.stringify({
-                    type: 'sync',
-                    from: 0,
-                    state: {
-                        board: game.board,
-                        players: game.players,
-                        currentPlayer: game.currentPlayer,
-                        stepRemaining: game.stepRemaining,
-                        phase: game.phase,
-                        movePath: game.movePath,
-                        gameOver: game.gameOver,
-                        winner: game.winner,
-                        turnCount: game.turnCount,
-                    }
-                }));
-            } else {
-                // 加入者发送重置请求
-                ws.send(JSON.stringify({ type: 'reset_request' }));
-                // 这里可以加个UI提示，表明请求已发送，等待房主响应
-            }
-        } else {
-            // 其他模式直接重置
+restartBtn.addEventListener('click', () => {
+    if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
+        if (wsPlayerIndex === 0) {
+            // 房主直接重置并同步
             resetGame();
+            wsSend({ type: 'sync', from: 0, state: {
+                board: game.board, players: game.players,
+                currentPlayer: game.currentPlayer, stepRemaining: game.stepRemaining,
+                phase: game.phase, movePath: game.movePath,
+                gameOver: game.gameOver, winner: game.winner, turnCount: game.turnCount,
+            }});
+        } else {
+            // 加入者发送重置请求
+            wsSend({ type: 'reset_request' });
+            p2pStatus.textContent = '⏳ 已请求新游戏，等待房主响应...';
+            p2pStatus.style.color = '#f0d4a0';
         }
-    });
+    } else {
+        resetGame();
+    }
+});
 
     // ---- 房间操作 ----
     createRoomBtn.addEventListener('click', () => {
