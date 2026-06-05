@@ -1612,37 +1612,11 @@
             p2pStatus.textContent = '🟢 已连接服务器';
             p2pStatus.style.color = '#5cb85c';
         };
-        ws.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
-
-            if (msg.type === 'reset_request') {
-                if (wsPlayerIndex === 0) {
-                    // 房主收到请求，执行重置并同步状态
-                    resetGame();
-                    ws.send(JSON.stringify({
-                        type: 'sync',
-                        from: 0,
-                        state: {
-                            board: game.board,
-                            players: game.players,
-                            currentPlayer: game.currentPlayer,
-                            stepRemaining: game.stepRemaining,
-                            phase: game.phase,
-                            movePath: game.movePath,
-                            gameOver: game.gameOver,
-                            winner: game.winner,
-                            turnCount: game.turnCount,
-                        }
-                    }));
-                }
-            } else if (msg.type === 'sync') {
-                if (msg.from === 0) {
-                    Object.assign(game, msg.state);
-                    updateUI();
-                    drawBoard();
-                }
-            }
-            // 其他消息处理
+        ws.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                handleWSMessage(msg);
+            } catch(err) {}
         };
         ws.onclose = () => {
             wsConnected = false;
