@@ -612,9 +612,9 @@
         drawBoard(); updateUI(); playMoveSound();
         if (game.stepRemaining <= 0 && game.phase === 'move') enterWallPhase();
         // 联机同步
-        //if (game.mode === 'p2p' && ws && wsConnected) {
-        //    wsSend({ type: 'action', action: 'move', row: newRow, col: newCol, stepRemaining: game.stepRemaining, movePath: game.movePath, phase: game.phase });
-        //}
+        if (game.mode === 'p2p' && ws && wsConnected) {
+            wsSend({ type: 'action', action: 'move', row: newRow, col: newCol, stepRemaining: game.stepRemaining, movePath: game.movePath, phase: game.phase });
+        }
         return true;
     }
 
@@ -669,9 +669,9 @@
         }
         playWallSound();
         // 联机同步
-        //if (game.mode === 'p2p' && ws && wsConnected) {
-        //    wsSend({ type: 'action', action: 'wall', dir: dir });
-        //}
+        if (game.mode === 'p2p' && ws && wsConnected) {
+            wsSend({ type: 'action', action: 'wall', dir: dir });
+        }
         endTurn();
     }
 
