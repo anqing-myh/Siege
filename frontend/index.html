@@ -1954,7 +1954,8 @@
                 c,
                 dir: 'h'
             };
-            render();
+            drawBoard();
+            updateUI();
             return;
         }
         // 第二次点击同一个位置：确认放墙
@@ -1965,7 +1966,8 @@
         // 点击不同位置：更新墙的位置
         game.selectedWall.r = r;
         game.selectedWall.c = c;
-        render();
+        drawBoard();
+        updateUI();
     }
 
     function isLocalPlayerTurn() {
@@ -2017,15 +2019,20 @@
             const scaleY = canvas.height / rect.height;
             const x = (e.clientX - rect.left) * scaleX;
             const y = (e.clientY - rect.top) * scaleY;
-            const gridCol = Math.floor(x / CELL_SIZE);
-            const gridRow = Math.floor(y / CELL_SIZE);
-            if (!isInBounds(gridRow, gridCol)) return;
+            const gridX = Math.floor(x / CELL_SIZE);
+            const gridY = Math.floor(y / CELL_SIZE);
+            if (!isInBounds(gridY, gridX)) return;
             if (game.phase === 'move') {
                 const player = game.players[game.currentPlayer];
                 const dr = gridY - player.row;
                 const dc = gridX - player.col;
-                tryMove(dr, dc);
-            } else if (game.phase === 'wall') {
+                const moved = tryMove(dr, dc);
+                // 移动端：成功移动后立刻进入放墙阶段
+                if (moved && game.phase === 'move') {
+                    enterWallPhase();
+                }
+            }
+            else if (game.phase === 'wall') {
                 handleMobileWallClick(gridY, gridX);
             }
         });
