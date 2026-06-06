@@ -295,6 +295,7 @@
             <p>这是我做出的第一款真正意义上的游戏</p>
             <p>它除了基础的双人对战之外，还支持人机对战和联机功能</p>
             <p>其实这是我的一个突发奇想，这个游戏从着手开始做，到配置部署服务器，再到后期缝缝补补，二十余次的代码更新，主要都在一天内完成</p>
+            <p> · 特别鸣谢zym小姐的倾情支持</p>
             <p>总之感谢游玩，后续还会继续优化体验,希望大家玩得开心！</p>
             <p>2026/6/6</p>
             <button id="closeAboutBtn">关闭</button>
@@ -363,6 +364,18 @@
 
     // ---- 工具 ----
     function isInBounds(r, c) { return r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE; }
+
+    // ---- 判断是否移动端 ----
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+    // ---- 是否允许当前玩家操作 ----
+    function canOperate() {
+        if (game.aiThinking) return false;
+        if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) return false;
+        if (game.mode === 'p2p' && !isLocalPlayerTurn() && !game.gameOver) return false;
+        if (game.gameOver) return false;
+        return true;
+    }
 
     function getNeighbors(r, c) {
         const dirs = [
@@ -914,11 +927,6 @@
 
     // ---- AI (保留完整AI逻辑) ----
     // ...（AI代码较长，与之前完全一致，为节省空间此处省略，实际文件需包含完整AI函数）
-    // 提示：实际部署时请将原HTML中的完整AI函数（aiTurn, aiSearch, oppSearch, maxSearch, 
-    // evaluateState, cloneGameState, cloneState, countApproachCorridors, 
-    // countPathBottlenecks, countMobility, computeRegionsFromState, 
-    // getNeighborsFromState, pathHasDeadEndRisk, findShortestPath）复制到此处
-
     function aiTurn() {
             if (game.gameOver || game.aiThinking) return;
             game.aiThinking = true;
@@ -1829,10 +1837,8 @@
         if (msg.type === 'created') {
             wsRoomCode = msg.roomCode;
             wsPlayerIndex = 0;
-
             p2pStatus.textContent = '🏠 房间码: ' + msg.roomCode + ' (等待对手...)';
             p2pStatus.style.color = '#f0d4a0';
-
             copyRoomCodeBtn.style.display = 'inline-block';
             copyRoomCodeBtn.onclick = () => {
                 navigator.clipboard.writeText(msg.roomCode).then(() => {
@@ -1847,83 +1853,64 @@
                     ta.select();
                     document.execCommand('copy');
                     document.body.removeChild(ta);
-
                     copyRoomCodeBtn.textContent = '✅ 已复制';
                     setTimeout(() => {
                         copyRoomCodeBtn.textContent = '📋 复制房间码';
                     }, 2000);
                 });
             };
-
             game.mode = 'p2p';
-
             // 房主创建房间后初始化棋局，并同步到服务器保存
             resetGame(true);
             updateUI();
             drawBoard();
         }
-
         else if (msg.type === 'joined') {
             wsRoomCode = msg.roomCode;
             wsPlayerIndex = 1;
-
             p2pStatus.textContent = '✅ 已加入房间 ' + msg.roomCode;
             p2pStatus.style.color = '#5cb85c';
-
             copyRoomCodeBtn.style.display = 'none';
-
             game.mode = 'p2p';
-
             // 加入者不自己 reset，等待服务器/房主 sync 当前棋局
             updateUI();
             drawBoard();
-
             // 兼容旧后端：如果后端没有立刻发 sync，这里主动请求一次
             wsSend({ type: 'sync_request' });
         }
-
         else if (msg.type === 'opponent_joined') {
             p2pStatus.textContent = '✅ 对手已加入！游戏开始';
             p2pStatus.style.color = '#5cb85c';
-
             // 房主收到加入通知后，把当前完整棋局同步一次
             if (wsPlayerIndex === 0) {
                 syncGameState();
             }
         }
-
         else if (msg.type === 'sync_request') {
             // 只有房主响应同步请求
             if (wsPlayerIndex === 0) {
                 syncGameState();
             }
         }
-
         else if (msg.type === 'sync') {
             if (!msg.state) return;
-
             applyNetworkState(msg.state);
-
             if (wsPlayerIndex === 0) {
                 p2pStatus.textContent = '✅ 已同步棋局';
             } else if (wsPlayerIndex === 1) {
                 p2pStatus.textContent = '✅ 已同步房主棋局';
             }
-
             p2pStatus.style.color = '#5cb85c';
         }
-
         else if (msg.type === 'reset_request') {
             // 加入者点击“新游戏”后，服务器转发给房主
             if (wsPlayerIndex === 0) {
                 p2pStatus.textContent = '🔄 对方请求开始新游戏';
                 p2pStatus.style.color = '#f0d4a0';
-
                 // 房主直接重置并同步
                 resetGame(true);
             }
         }
-
         else if (msg.type === 'restart') {
             // 兼容旧后端 restart 消息
             if (msg.state) {
@@ -1931,32 +1918,25 @@
             } else {
                 resetGame(false);
             }
-
             p2pStatus.textContent = '🔄 新游戏已开始';
             p2pStatus.style.color = '#5cb85c';
         }
-
         else if (msg.type === 'opponent_left') {
             p2pStatus.textContent = '⚠️ 对手已离开';
             p2pStatus.style.color = '#ff6b6b';
         }
-
         else if (msg.type === 'room_closed') {
             wsRoomCode = null;
             wsPlayerIndex = null;
-
             p2pStatus.textContent = '房主已离开，房间已解散';
             p2pStatus.style.color = '#ff6b6b';
-
             updateUI();
             drawBoard();
         }
-
         else if (msg.type === 'error') {
             p2pStatus.textContent = '❌ ' + msg.message;
             p2pStatus.style.color = '#ff6b6b';
         }
-
         else if (msg.type === 'action') {
             // 如果你已经改成完整 sync 方案，这里通常不会再用。
             // 保留是为了兼容旧后端/旧客户端。
@@ -1965,45 +1945,88 @@
             }
         }
     }
+    function handleMobileWallClick(r, c) {
+        // 第一次点击：进入放墙模式，选中墙的位置
+        if (!game.selectedWall) {
+            game.selectedWall = {
+                r,
+                c,
+                dir: 'h'
+            };
+            render();
+            return;
+        }
+        // 第二次点击同一个位置：确认放墙
+        if (game.selectedWall.r === r && game.selectedWall.c === c) {
+            confirmWall();
+            return;
+        }
+        // 点击不同位置：更新墙的位置
+        game.selectedWall.r = r;
+        game.selectedWall.c = c;
+        render();
+    }
 
     function isLocalPlayerTurn() {
         if (game.mode !== 'p2p') return true;
         return game.currentPlayer === wsPlayerIndex;
     }
 
-    // ---- 键盘事件 ----
-    document.addEventListener('keydown', (e) => {
-        const key = e.key;
-        if (game.aiThinking) return;
-        if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) return;
-        if (game.mode === 'p2p' && !isLocalPlayerTurn() && !game.gameOver) return;
-        if (key === 'w' || key === 'W' || key === 'ArrowUp') {
-            e.preventDefault();
-            if (game.phase === 'move') tryMove(-1, 0);
-            else if (game.phase === 'wall') selectWallDir(-1, 0);
-        } else if (key === 's' || key === 'S' || key === 'ArrowDown') {
-            e.preventDefault();
-            if (game.phase === 'move') tryMove(1, 0);
-            else if (game.phase === 'wall') selectWallDir(1, 0);
-        } else if (key === 'a' || key === 'A' || key === 'ArrowLeft') {
-            e.preventDefault();
-            if (game.phase === 'move') tryMove(0, -1);
-            else if (game.phase === 'wall') selectWallDir(0, -1);
-        } else if (key === 'd' || key === 'D' || key === 'ArrowRight') {
-            e.preventDefault();
-            if (game.phase === 'move') tryMove(0, 1);
-            else if (game.phase === 'wall') selectWallDir(0, 1);
-        } else if (key === 'j' || key === 'J') {
-            e.preventDefault();
-            if (game.phase === 'move') enterWallPhase();
-        } else if (key === ' ') {
-            e.preventDefault();
-            if (game.phase === 'wall') confirmWall();
-        } else if (key === 'q' || key === 'Q') {
-            e.preventDefault();
-            if (game.phase === 'wall') cancelWall();
-        }
-    });
+    // ---- 电脑端键盘事件 ----
+    if (!isMobile) {
+        document.addEventListener('keydown', (e) => {
+            const key = e.key;
+            if (!canOperate()) return;
+            if (key === 'w' || key === 'W' || key === 'ArrowUp') {
+                e.preventDefault();
+                if (game.phase === 'move') tryMove(-1, 0);
+                else if (game.phase === 'wall') selectWallDir(-1, 0);
+            } else if (key === 's' || key === 'S' || key === 'ArrowDown') {
+                e.preventDefault();
+                if (game.phase === 'move') tryMove(1, 0);
+                else if (game.phase === 'wall') selectWallDir(1, 0);
+            } else if (key === 'a' || key === 'A' || key === 'ArrowLeft') {
+                e.preventDefault();
+                if (game.phase === 'move') tryMove(0, -1);
+                else if (game.phase === 'wall') selectWallDir(0, -1);
+            } else if (key === 'd' || key === 'D' || key === 'ArrowRight') {
+                e.preventDefault();
+                if (game.phase === 'move') tryMove(0, 1);
+                else if (game.phase === 'wall') selectWallDir(0, 1);
+            } else if (key === 'j' || key === 'J') {
+                e.preventDefault();
+                if (game.phase === 'move') enterWallPhase();
+            } else if (key === ' ') {
+                e.preventDefault();
+                if (game.phase === 'wall') confirmWall();
+            } else if (key === 'q' || key === 'Q') {
+                e.preventDefault();
+                if (game.phase === 'wall') cancelWall();
+            }
+        });
+    }
+
+    // ---- 移动端点击事件 ----
+    if (isMobile) {
+        const canvas = document.getElementById('boardCanvas');
+        canvas.addEventListener('click', (e) => {
+            if (!canOperate()) return;
+            const rect = canvas.getBoundingClientRect();
+            const scale = canvas.width / rect.width; // 考虑缩放
+            const x = (e.clientX - rect.left) * scale;
+            const y = (e.clientY - rect.top) * scale;
+            const gridX = Math.floor(x / CELL_SIZE); // CELL_SIZE 是每格像素大小
+            const gridY = Math.floor(y / CELL_SIZE);
+            if (game.phase === 'move') {
+                const player = game.players[game.currentPlayer];
+                const dr = gridY - player.r;
+                const dc = gridX - player.c;
+                tryMove(dr, dc);
+            } else if (game.phase === 'wall') {
+                handleMobileWallClick(gridY, gridX);
+            }
+        });
+    }
 
     // ---- 模式选择 ----
     modeBtns.forEach(btn => {
