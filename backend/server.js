@@ -1,5 +1,6 @@
 const { WebSocketServer } = require('ws');
 const http = require('http');
+
 const server = http.createServer();
 const wss = new WebSocketServer({ server });
 
@@ -14,44 +15,41 @@ function generateRoomCode() {
   return code;
 }
 
-// 离开房间逻辑
+function send(ws, data) {
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify(data));
+  }
+}
+
+function broadcast(room, data, exceptWs = null) {
+  for (const p of room.players) {
+    if (p.ws !== exceptWs) send(p.ws, data);
+  }
+}
+
 function leaveRoom(ws) {
-  const roomCode = ws.currentRoom;
-  const playerIndex = ws.playerIndex;
+  const code = ws.currentRoom;
+  if (!code || !rooms.has(code)) return;
 
-  if (!roomCode || !rooms.has(roomCode)) return;
-  const room = rooms.get(roomCode);
+  const room = rooms.get(code);
 
-  // 房主离开 → 通知其他玩家，但不切换模式
-  if (playerIndex === 0) {
-    room.forEach(p => {
-      if (p.ws.readyState === 1 && p.ws !== ws) {
-        p.ws.send(JSON.stringify({ type: 'room_closed', reason: 'host_left' }));
-      }
+  if (ws.playerIndex === 0) {
+    broadcast(room, { type: 'room_closed', reason: 'host_left' }, ws);
+    for (const p of room.players) {
       p.ws.currentRoom = null;
       p.ws.playerIndex = null;
-    });
-    rooms.delete(roomCode);
-    console.log(`Room ${roomCode} closed (host left)`);
+    }
+    rooms.delete(code);
     return;
   }
 
-  // 非房主离开 → 移除玩家并通知房主
-  const host = room.find(p => p.playerIndex === 0);
-  if (host && host.ws.readyState === 1) {
-    host.ws.send(JSON.stringify({ type: 'opponent_left' }));
-  }
+  room.players = room.players.filter(p => p.ws !== ws);
 
-  const remaining = room.filter(p => p.ws !== ws);
-  if (remaining.length > 0) {
-    rooms.set(roomCode, remaining);
-  } else {
-    rooms.delete(roomCode);
-  }
+  const host = room.players.find(p => p.playerIndex === 0);
+  if (host) send(host.ws, { type: 'opponent_left' });
 
   ws.currentRoom = null;
   ws.playerIndex = null;
-  console.log(`Player left room ${roomCode}`);
 }
 
 wss.on('connection', (ws) => {
@@ -59,80 +57,112 @@ wss.on('connection', (ws) => {
   ws.playerIndex = null;
 
   ws.on('message', (raw) => {
-  try {
-    const msg = JSON.parse(raw.toString());
+    try {
+      const msg = JSON.parse(raw.toString());
 
-    if (msg.type === 'create') {
-      let code;
-      do { code = generateRoomCode(); } while (rooms.has(code));
-      rooms.set(code, [{ ws, playerIndex: 0, state: {} }]);
-      ws.currentRoom = code;
-      ws.playerIndex = 0;
-      ws.send(JSON.stringify({ type: 'created', roomCode: code, playerIndex: 0 }));
-    }
-    else if (msg.type === 'join') {
-      const code = msg.roomCode?.toUpperCase();
-      if (!code || !rooms.has(code)) {
-        ws.send(JSON.stringify({ type: 'error', message: '房间不存在' }));
+      if (msg.type === 'create') {
+        let code;
+        do {
+          code = generateRoomCode();
+        } while (rooms.has(code));
+
+        rooms.set(code, {
+          players: [{ ws, playerIndex: 0 }],
+          state: msg.state || null
+        });
+
+        ws.currentRoom = code;
+        ws.playerIndex = 0;
+
+        send(ws, {
+          type: 'created',
+          roomCode: code,
+          playerIndex: 0
+        });
+
         return;
       }
-      const room = rooms.get(code);
-      if (room.length >= 2) {
-        ws.send(JSON.stringify({ type: 'error', message: '房间已满' }));
+
+      if (msg.type === 'join') {
+        const code = msg.roomCode?.toUpperCase();
+
+        if (!code || !rooms.has(code)) {
+          send(ws, { type: 'error', message: '房间不存在' });
+          return;
+        }
+
+        const room = rooms.get(code);
+
+        if (room.players.length >= 2) {
+          send(ws, { type: 'error', message: '房间已满' });
+          return;
+        }
+
+        room.players.push({ ws, playerIndex: 1 });
+
+        ws.currentRoom = code;
+        ws.playerIndex = 1;
+
+        send(ws, {
+          type: 'joined',
+          roomCode: code,
+          playerIndex: 1
+        });
+
+        const host = room.players.find(p => p.playerIndex === 0);
+        if (host) {
+          send(host.ws, { type: 'opponent_joined' });
+        }
+
+        if (room.state) {
+          send(ws, {
+            type: 'sync',
+            from: 0,
+            state: room.state
+          });
+        }
+
         return;
       }
 
-      // 加入房间
-      room.push({ ws, playerIndex: 1, state: {} });
-      ws.currentRoom = code;
-      ws.playerIndex = 1;
-      ws.send(JSON.stringify({ type: 'joined', roomCode: code, playerIndex: 1 }));
+      if (msg.type === 'leave') {
+        leaveRoom(ws);
+        return;
+      }
 
-      // 通知房主对手加入，并同步游戏状态给新加入玩家
-      const host = room.find(p => p.playerIndex === 0);
-      if (host && host.ws.readyState === 1) {
-        host.ws.send(JSON.stringify({ type: 'opponent_joined' }));
-        ws.send(JSON.stringify({
+      if (!ws.currentRoom || !rooms.has(ws.currentRoom)) return;
+
+      const room = rooms.get(ws.currentRoom);
+
+      if (msg.type === 'sync') {
+        if (msg.state) {
+          room.state = msg.state;
+        }
+
+        broadcast(room, {
           type: 'sync',
-          from: 0,
-          state: host.state // 房主状态统一存放在 state
-        }));
-      }
-    }
-    else if (msg.type === 'leave') {
-      leaveRoom(ws);
-    }
-    else if (msg.type === 'action' || msg.type === 'sync' || msg.type === 'restart') {
-      if (!ws.currentRoom || !rooms.has(ws.currentRoom)) return;
-      const room = rooms.get(ws.currentRoom);
+          from: ws.playerIndex,
+          state: room.state
+        }, ws);
 
-      // 保存房主状态在 state 中
-      if (ws.playerIndex === 0 && msg.state) {
-        room[0].state = msg.state; // 统一存放在 state
+        return;
       }
 
-      // 广播给房间内其他玩家
-      for (const p of room) {
-        if (p.ws !== ws && p.ws.readyState === 1) {
-          p.ws.send(JSON.stringify({ ...msg, from: ws.playerIndex }));
+      if (msg.type === 'reset_request') {
+        const host = room.players.find(p => p.playerIndex === 0);
+        if (host) {
+          send(host.ws, {
+            type: 'reset_request',
+            from: ws.playerIndex
+          });
         }
+        return;
       }
+
+    } catch (e) {
+      console.error('消息解析错误:', e);
     }
-    else if (msg.type === 'reset_request') {
-      if (!ws.currentRoom || !rooms.has(ws.currentRoom)) return;
-      const room = rooms.get(ws.currentRoom);
-      if (ws.playerIndex === 0) {
-        for (const p of room) {
-          if (p.ws.readyState === 1) {
-            p.ws.send(JSON.stringify({ type: 'restart' }));
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.error('消息解析错误:', e);
-  }
-});
+  });
 
   ws.on('close', () => {
     leaveRoom(ws);

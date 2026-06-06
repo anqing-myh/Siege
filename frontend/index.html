@@ -627,43 +627,46 @@
     document.addEventListener('keydown', () => ensureAudioContext(), { once: true });
 
     // ---- 重置游戏 ----
-    function resetGame() {
+    function resetGame(shouldSync = true) {
         game.board = [];
+
         for (let r = 0; r < BOARD_SIZE; r++) {
             const row = [];
             for (let c = 0; c < BOARD_SIZE; c++) {
-                row.push({ walls: { top: false, right: false, bottom: false, left: false } });
+                row.push({
+                    walls: {
+                        top: false,
+                        right: false,
+                        bottom: false,
+                        left: false
+                    }
+                });
             }
             game.board.push(row);
         }
-        game.players[0] = { row: BOARD_SIZE-1, col: 0, regionSize: 0 };
-        game.players[1] = { row: 0, col: BOARD_SIZE-1, regionSize: 0 };
+
+        game.players[0] = { row: BOARD_SIZE - 1, col: 0, regionSize: 0 };
+        game.players[1] = { row: 0, col: BOARD_SIZE - 1, regionSize: 0 };
+
         game.currentPlayer = 0;
         game.stepRemaining = 3;
         game.phase = 'move';
-        game.movePath = [{row: game.players[0].row, col: game.players[0].col}];
+        game.movePath = [{ row: game.players[0].row, col: game.players[0].col }];
         game.wallDir = null;
         game.gameOver = false;
         game.winner = null;
         game.turnCount = 1;
         game.aiThinking = false;
+
         updateUI();
         drawBoard();
+
+        if (shouldSync) {
+            syncGameState();
+        }
+
         if (game.mode === 'pve' && game.currentPlayer === 1) {
             setTimeout(() => aiTurn(), 100);
-        }
-                // resetGame() 末尾添加
-        if (game.mode === 'p2p' && ws && wsConnected && wsPlayerIndex === 0) {
-            wsSend({ type: 'sync', from: 0, state: {
-                board: game.board,
-                players: game.players,
-                currentPlayer: game.currentPlayer,
-                stepRemaining: game.stepRemaining,
-                phase: game.phase,
-                movePath: game.movePath,
-                gameOver: game.gameOver,
-                winner: game.winner,
-                turnCount: game.turnCount,}});
         }
     }
 
@@ -700,8 +703,8 @@
         drawBoard(); updateUI(); playMoveSound();
         if (game.stepRemaining <= 0 && game.phase === 'move') enterWallPhase();
         // 联机同步
-        if (game.mode === 'p2p' && ws && wsConnected) {
-            wsSend({ type: 'action', action: 'move', row: newRow, col: newCol, stepRemaining: game.stepRemaining, movePath: game.movePath, phase: game.phase });
+        if (game.mode === 'p2p') {
+            syncGameState();
         }
         return true;
     }
@@ -711,6 +714,9 @@
         game.phase = 'wall';
         game.wallDir = null;
         updateUI(); drawBoard();
+        if (game.mode === 'p2p') {
+            syncGameState();
+        }
     }
 
     function selectWallDir(dRow, dCol) {
@@ -728,6 +734,9 @@
         if (!isInBounds(oppRow, oppCol)) return;
         game.wallDir = dir;
         drawBoard(); updateUI();
+        if (game.mode === 'p2p') {
+            syncGameState();
+        }
     }
 
     function confirmWall() {
@@ -746,10 +755,7 @@
         game.board[pl.row][pl.col].walls[dir] = true;
         if (isInBounds(oppRow, oppCol)) game.board[oppRow][oppCol].walls[oppDir] = true;
 
-        // 先同步，再判断游戏结束
-        if (game.mode === 'p2p' && ws && wsConnected) {
-            wsSend({ type: 'action', action: 'wall', dir: dir });
-        }       
+        // 先同步，再判断游戏结束   
 
         const over = checkGameOver();
         drawBoard();
@@ -759,6 +765,9 @@
                 else if (game.winner === 1) playLoseSound();
             }
             updateUI(); drawBoard();
+            if (game.mode === 'p2p') {
+                syncGameState();
+            }
             return;
         }
         playWallSound();
@@ -767,6 +776,9 @@
         //    wsSend({ type: 'action', action: 'wall', dir: dir });
         //}
         endTurn();
+        if (game.mode === 'p2p') {
+            syncGameState();
+        }
     }
 
     function cancelWall() {
@@ -774,6 +786,9 @@
         game.phase = 'move';
         game.wallDir = null;
         drawBoard(); updateUI();
+        if (game.mode === 'p2p') {
+            syncGameState();
+        }
     }
 
     function endTurn() {
@@ -1659,138 +1674,187 @@
         ws.send(JSON.stringify(payload));
         return true;
     }
+    function getNetworkState() {
+        return {
+            board: game.board,
+            players: game.players,
+            currentPlayer: game.currentPlayer,
+            stepRemaining: game.stepRemaining,
+            phase: game.phase,
+            movePath: game.movePath,
+            wallDir: game.wallDir,
+            gameOver: game.gameOver,
+            winner: game.winner,
+            mode: 'p2p',
+            turnCount: game.turnCount,
+            aiThinking: false
+        };
+    }
+
+    function applyNetworkState(state) {
+        game.board = state.board;
+        game.players = state.players;
+        game.currentPlayer = state.currentPlayer;
+        game.stepRemaining = state.stepRemaining;
+        game.phase = state.phase;
+        game.movePath = state.movePath || [];
+        game.wallDir = state.wallDir || null;
+        game.gameOver = state.gameOver;
+        game.winner = state.winner;
+        game.mode = 'p2p';
+        game.turnCount = state.turnCount;
+        game.aiThinking = false;
+
+        updateUI();
+        drawBoard();
+    }
+
+    function syncGameState() {
+        if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN && wsRoomCode) {
+            wsSend({
+                type: 'sync',
+                state: getNetworkState()
+            });
+        }
+    }
 
     function handleWSMessage(msg) {
         if (msg.type === 'created') {
             wsRoomCode = msg.roomCode;
             wsPlayerIndex = 0;
+
             p2pStatus.textContent = '🏠 房间码: ' + msg.roomCode + ' (等待对手...)';
             p2pStatus.style.color = '#f0d4a0';
+
             copyRoomCodeBtn.style.display = 'inline-block';
             copyRoomCodeBtn.onclick = () => {
                 navigator.clipboard.writeText(msg.roomCode).then(() => {
                     copyRoomCodeBtn.textContent = '✅ 已复制';
-                    setTimeout(() => { copyRoomCodeBtn.textContent = '📋 复制房间码'; }, 2000);
+                    setTimeout(() => {
+                        copyRoomCodeBtn.textContent = '📋 复制房间码';
+                    }, 2000);
                 }).catch(() => {
                     const ta = document.createElement('textarea');
-                    ta.value = msg.roomCode; document.body.appendChild(ta);
-                    ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+                    ta.value = msg.roomCode;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+
                     copyRoomCodeBtn.textContent = '✅ 已复制';
-                    setTimeout(() => { copyRoomCodeBtn.textContent = '📋 复制房间码'; }, 2000);
+                    setTimeout(() => {
+                        copyRoomCodeBtn.textContent = '📋 复制房间码';
+                    }, 2000);
                 });
             };
+
             game.mode = 'p2p';
-            resetGame();
+
+            // 房主创建房间后初始化棋局，并同步到服务器保存
+            resetGame(true);
+            updateUI();
+            drawBoard();
         }
+
         else if (msg.type === 'joined') {
             wsRoomCode = msg.roomCode;
             wsPlayerIndex = 1;
+
             p2pStatus.textContent = '✅ 已加入房间 ' + msg.roomCode;
             p2pStatus.style.color = '#5cb85c';
+
+            copyRoomCodeBtn.style.display = 'none';
+
             game.mode = 'p2p';
+
+            // 加入者不自己 reset，等待服务器/房主 sync 当前棋局
+            updateUI();
+            drawBoard();
+
+            // 兼容旧后端：如果后端没有立刻发 sync，这里主动请求一次
             wsSend({ type: 'sync_request' });
         }
-        else if (msg.type === 'sync_request') {
-            if (!currentRoom || !rooms.has(currentRoom)) return;
-            const room = rooms.get(currentRoom);
-            // 只让房主响应
-            const master = room.find(p => p.playerIndex === 0);
-            if (master && master.ws.readyState === 1 && master.ws !== ws) {
-                master.ws.send(JSON.stringify({ type: 'sync', to: wsPlayerIndex }));
-            }
-        }
+
         else if (msg.type === 'opponent_joined') {
             p2pStatus.textContent = '✅ 对手已加入！游戏开始';
             p2pStatus.style.color = '#5cb85c';
+
+            // 房主收到加入通知后，把当前完整棋局同步一次
+            if (wsPlayerIndex === 0) {
+                syncGameState();
+            }
         }
+
+        else if (msg.type === 'sync_request') {
+            // 只有房主响应同步请求
+            if (wsPlayerIndex === 0) {
+                syncGameState();
+            }
+        }
+
+        else if (msg.type === 'sync') {
+            if (!msg.state) return;
+
+            applyNetworkState(msg.state);
+
+            if (wsPlayerIndex === 0) {
+                p2pStatus.textContent = '✅ 已同步棋局';
+            } else if (wsPlayerIndex === 1) {
+                p2pStatus.textContent = '✅ 已同步房主棋局';
+            }
+
+            p2pStatus.style.color = '#5cb85c';
+        }
+
+        else if (msg.type === 'reset_request') {
+            // 加入者点击“新游戏”后，服务器转发给房主
+            if (wsPlayerIndex === 0) {
+                p2pStatus.textContent = '🔄 对方请求开始新游戏';
+                p2pStatus.style.color = '#f0d4a0';
+
+                // 房主直接重置并同步
+                resetGame(true);
+            }
+        }
+
+        else if (msg.type === 'restart') {
+            // 兼容旧后端 restart 消息
+            if (msg.state) {
+                applyNetworkState(msg.state);
+            } else {
+                resetGame(false);
+            }
+
+            p2pStatus.textContent = '🔄 新游戏已开始';
+            p2pStatus.style.color = '#5cb85c';
+        }
+
         else if (msg.type === 'opponent_left') {
             p2pStatus.textContent = '⚠️ 对手已离开';
             p2pStatus.style.color = '#ff6b6b';
         }
+
+        else if (msg.type === 'room_closed') {
+            wsRoomCode = null;
+            wsPlayerIndex = null;
+
+            p2pStatus.textContent = '房主已离开，房间已解散';
+            p2pStatus.style.color = '#ff6b6b';
+
+            updateUI();
+            drawBoard();
+        }
+
         else if (msg.type === 'error') {
             p2pStatus.textContent = '❌ ' + msg.message;
             p2pStatus.style.color = '#ff6b6b';
         }
-        else if (msg.type === 'room_closed') {
-            wsRoomCode = null;
-            wsPlayerIndex = null;
-            //alert('房主已离开，房间已解散');
-            p2pStatus.textContent = '房主已离开，房间已解散';
-            p2pStatus.style.color = '#ff6b6b';
-            // 这里可以重置界面，切换回单机模式等
-            //game.mode = 'pve';
-            updateUI();
-            drawBoard();
-        }
-        else if (msg.type === 'restart') {
-            resetGame();
-        }
-        else if (msg.type === 'reset_request') {
-            // 只有房主响应重置请求
-            if (wsPlayerIndex === 0) {
-                resetGame();
-                wsSend({ 
-                    type: 'sync', 
-                    from: 0, 
-                    state: {
-                        board: game.board,
-                        players: game.players,
-                        currentPlayer: game.currentPlayer,
-                        stepRemaining: game.stepRemaining,
-                        phase: game.phase,
-                        movePath: game.movePath,
-                        gameOver: game.gameOver,
-                        winner: game.winner,
-                        turnCount: game.turnCount,
-                    }
-                });
-            }
-        }
-        else if (msg.type === 'sync') {
-            if (msg.from === 0 && msg.state) {
-                game.board = msg.state.board;
-                game.players = msg.state.players;
-                game.currentPlayer = msg.state.currentPlayer;
-                game.stepRemaining = msg.state.stepRemaining;
-                game.phase = msg.state.phase;
-                game.movePath = msg.state.movePath;
-                game.gameOver = msg.state.gameOver;
-                game.winner = msg.state.winner;
-                game.turnCount = msg.state.turnCount;
-                game.mode = 'p2p';
-                updateUI();
-                drawBoard();
-            }
-        }
+
         else if (msg.type === 'action') {
-            // 对手操作
-            if (msg.action === 'move') {
-                const p = game.currentPlayer;
-                game.players[p].row = msg.row;
-                game.players[p].col = msg.col;
-                game.stepRemaining = msg.stepRemaining;
-                game.movePath = msg.movePath;
-                game.phase = msg.phase;
-                drawBoard(); updateUI();
-            } else if (msg.action === 'wall') {
-                const dir = msg.dir;
-                const p = game.currentPlayer;
-                const pl = game.players[p];
-                const oppDir = {top:'bottom',bottom:'top',left:'right',right:'left'}[dir];
-                const dr = {top:-1,bottom:1,left:0,right:0}[dir];
-                const dc = {top:0,bottom:0,left:-1,right:1}[dir];
-                const oppR = pl.row + dr, oppC = pl.col + dc;
-                game.board[pl.row][pl.col].walls[dir] = true;
-                if (isInBounds(oppR, oppC)) game.board[oppR][oppC].walls[oppDir] = true;
-                const over = checkGameOver();
-                if (over) { drawBoard(); updateUI(); return; }
-                game.currentPlayer = 1 - game.currentPlayer;
-                game.stepRemaining = 3;
-                game.phase = 'move';
-                const pl2 = game.players[game.currentPlayer];
-                game.movePath = [{row: pl2.row, col: pl2.col}];
-                game.wallDir = null;
-                drawBoard(); updateUI();
+            // 如果你已经改成完整 sync 方案，这里通常不会再用。
+            // 保留是为了兼容旧后端/旧客户端。
+            if (msg.state) {
+                applyNetworkState(msg.state);
             }
         }
     }
@@ -1858,30 +1922,13 @@
     restartBtn.addEventListener('click', () => {
         if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
             if (wsPlayerIndex === 0) {
-                // 房主直接重置并通知对方
-                resetGame();
-                wsSend({
-                    type: 'sync',
-                    from: 0,
-                    state: {
-                        board: game.board,
-                        players: game.players,
-                        currentPlayer: game.currentPlayer,
-                        stepRemaining: game.stepRemaining,
-                        phase: game.phase,
-                        movePath: game.movePath,
-                        gameOver: game.gameOver,
-                        winner: game.winner,
-                        turnCount: game.turnCount,
-                    }
-                });
+                resetGame(true);
             } else {
-                // 加入者发送重置请求
                 wsSend({ type: 'reset_request' });
-                // 这里可以加个UI提示，表明请求已发送，等待房主响应
+                p2pStatus.textContent = '⏳ 已请求房主开始新游戏';
+                p2pStatus.style.color = '#f0d4a0';
             }
         } else {
-            // 其他模式直接重置
             resetGame();
         }
     });
