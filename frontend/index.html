@@ -293,7 +293,7 @@
             <h3>关于作者</h3>
             <p>作者:玄灵</p>
             <p>来自浙江大学，是一名AI专业大一学生</p>
-            <p>这是我做出的第一款真正意义上的游戏</p>
+            <p>这是我做出的第一款真正意义上的游戏，总体代码量在2500行左右</p>
             <p>它除了基础的双人对战之外，还支持人机对战和联机功能</p>
             <p>其实这是我的一个突发奇想，这个游戏从着手开始做，到配置部署服务器，再到后期缝缝补补，二十余次的代码更新，主要都在一天内完成</p>
             <p> · 特别鸣谢zym小姐的倾情支持</p>
@@ -775,6 +775,7 @@
         game.wallDir = null;
         game.gameOver = false;
         game.winner = null;
+        game.selectedWall = null;
         game.turnCount = 1;
         game.aiThinking = false;
         game.resultRecorded = false;
@@ -915,11 +916,13 @@
     function endTurn() {
         if (game.currentPlayer === 1) game.turnCount++;
         game.currentPlayer = 1 - game.currentPlayer;
-        game.stepRemaining = 3;
+        game.stepRemaining = 3;          // 固定每回合步数
         game.phase = 'move';
         const pl = game.players[game.currentPlayer];
-        game.movePath = [{row: pl.row, col: pl.col}];
+        game.movePath = [{ row: pl.row, col: pl.col }];
         game.wallDir = null;
+        game.selectedWall = null;
+        updateUI();
         drawBoard();
         if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) {
             setTimeout(() => aiTurn(), 100);
@@ -1952,54 +1955,43 @@
         const p = game.currentPlayer;
         const pl = game.players[p];
 
-        // 第一次点击选中墙位置
-        if (!game.selectedWall) {
-            game.selectedWall = { r, c, dir: null };
-            drawBoard();
-            updateUI();
+        // 放墙起点固定为当前玩家所在格子
+        const dr = r - pl.row;
+        const dc = c - pl.col;
+
+        // 只能点击上下左右相邻格子
+        if (Math.abs(dr) + Math.abs(dc) !== 1) return;
+
+        const dirMap = {
+            '-1,0': 'top',
+            '1,0': 'bottom',
+            '0,-1': 'left',
+            '0,1': 'right'
+        };
+
+        const dir = dirMap[`${dr},${dc}`];
+        if (!dir) return;
+
+        // 如果两格之间已经有墙，无效
+        const oppDir = {
+            top: 'bottom',
+            bottom: 'top',
+            left: 'right',
+            right: 'left'
+        }[dir];
+
+        if (game.board[pl.row][pl.col].walls[dir]) return;
+        if (game.board[r][c].walls[oppDir]) return;
+
+        // 第一次点击相邻格：选择方向
+        if (game.wallDir !== dir) {
+            selectWallDir(dr, dc);
             return;
         }
 
-        // 如果点击同一个格子，尝试确认方向并放置
-        if (game.selectedWall.r === r && game.selectedWall.c === c) {
-            if (!game.selectedWall.dir) return; // 没有选择方向
-            selectWallDir(...directionToDelta(game.selectedWall.dir)); // 调用原有方向选择函数
-            confirmWall(); // 调用确认函数
-            game.selectedWall = null;
-            return;
-        }
-
-        // 点击不同格子，更新墙位置并自动计算方向
-        const dr = r - game.selectedWall.r;
-        const dc = c - game.selectedWall.c;
-
-        // 根据玩家点击的方向选择上下左右
-        if (Math.abs(dr) > Math.abs(dc)) {
-            game.selectedWall.dir = dr > 0 ? 'bottom' : 'top';
-        } else if (dc !== 0) {
-            game.selectedWall.dir = dc > 0 ? 'right' : 'left';
-        } else {
-            game.selectedWall.dir = null; // 同格点击但没有移动
-        }
-
-        // 更新位置
-        game.selectedWall.r = r;
-        game.selectedWall.c = c;
-
-        drawBoard();
-        updateUI();
+        // 第二次点击同一个方向的相邻格：确认放墙
+        confirmWall();
     }
-
-    // 辅助：将方向转换为 delta(row,col)
-    function directionToDelta(dir) {
-        return {
-            top: [-1, 0],
-            bottom: [1, 0],
-            left: [0, -1],
-            right: [0, 1]
-        }[dir] || [0, 0];
-    }
-
     function isLocalPlayerTurn() {
         if (game.mode !== 'p2p') return true;
         return game.currentPlayer === wsPlayerIndex;
@@ -2045,13 +2037,15 @@
         // 移动端点击移动：使用 BFS 路径长度计算步数
         function handleMobileMoveClick(gridY, gridX) {
             if (game.gameOver || game.phase !== 'move' || game.aiThinking) return;
+
             const p = game.currentPlayer;
             const pl = game.players[p];
+
             // BFS 找最短路径到目标格
             const queue = [{ row: pl.row, col: pl.col, path: [] }];
-            const visited = new Set();
-            visited.add(`${pl.row},${pl.col}`);
+            const visited = new Set([`${pl.row},${pl.col}`]);
             let found = null;
+
             while (queue.length > 0) {
                 const cur = queue.shift();
                 const path = cur.path.concat({ row: cur.row, col: cur.col });
@@ -2059,9 +2053,8 @@
                     found = path;
                     break;
                 }
-                if (path.length > game.stepRemaining) continue; // 步数不足
-                const neighbors = getNeighbors(cur.row, cur.col);
-                for (const nb of neighbors) {
+                if (path.length > game.stepRemaining) continue;
+                for (const nb of getNeighbors(cur.row, cur.col)) {
                     const key = `${nb.row},${nb.col}`;
                     const oppIdx = 1 - p;
                     if (!visited.has(key) && !(nb.row === game.players[oppIdx].row && nb.col === game.players[oppIdx].col)) {
@@ -2071,49 +2064,20 @@
                 }
             }
             if (!found) return; // 不可达格子点击无效
-            // 消耗步数，更新 movePath
-            const cost = found.length - 1;
-            if (cost > game.stepRemaining) return;
-            const path = game.movePath;
-            const lastStep = path.length >= 2 ? path[path.length - 2] : null;
-            if (lastStep && lastStep.row === gridY && lastStep.col === gridX) {
-                path.pop();
-                game.stepRemaining += cost;
-            } else {
-                path.push({ row: gridY, col: gridX });
-                game.stepRemaining -= cost;
-            }
+            game.stepRemaining = 0;
             // 更新玩家位置
             pl.row = gridY;
             pl.col = gridX;
+
+            // 清空 movePath 并记录当前位置
+            game.movePath = [{ row: pl.row, col: pl.col }];
+            // 直接进入放墙阶段
+            enterWallPhase();
             drawBoard();
             updateUI();
             playMoveSound();
-            // 移动端自动进入放墙阶段
-            if (game.stepRemaining <= 0 && game.phase === 'move') {
-                enterWallPhase();
-            }
-            // 联机同步
             if (game.mode === 'p2p') syncGameState();
         }
-        // 移动端点击事件绑定
-        canvas.addEventListener('pointerdown', (e) => {
-            if (!canOperate()) return;
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            const x = (e.clientX - rect.left) * scaleX;
-            const y = (e.clientY - rect.top) * scaleY;
-            const gridX = Math.floor(x / CELL_SIZE);
-            const gridY = Math.floor(y / CELL_SIZE);
-            if (!isInBounds(gridY, gridX)) return;
-            if (game.phase === 'move') {
-                handleMobileMoveClick(gridY, gridX);
-            } else if (game.phase === 'wall') {
-                handleMobileWallClick(gridY, gridX);
-            }
-        });
-    }
 
     // ---- 模式选择 ----
     modeBtns.forEach(btn => {
