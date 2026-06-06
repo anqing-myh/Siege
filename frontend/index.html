@@ -68,6 +68,7 @@
             display: block;
             width: 420px;
             height: 420px;
+            touch-action: manipulation;
             background: #d9c8a6;
             border-radius: 10px;
             box-shadow: 0 0 0 2px #6a5a42;
@@ -2009,18 +2010,20 @@
     // ---- 移动端点击事件 ----
     if (isMobile) {
         const canvas = document.getElementById('boardCanvas');
-        canvas.addEventListener('click', (e) => {
+        canvas.addEventListener('pointerdown', (e) => {
             if (!canOperate()) return;
             const rect = canvas.getBoundingClientRect();
-            const scale = canvas.width / rect.width; // 考虑缩放
-            const x = (e.clientX - rect.left) * scale;
-            const y = (e.clientY - rect.top) * scale;
-            const gridX = Math.floor(x / CELL_SIZE); // CELL_SIZE 是每格像素大小
-            const gridY = Math.floor(y / CELL_SIZE);
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            const gridCol = Math.floor(x / CELL_SIZE);
+            const gridRow = Math.floor(y / CELL_SIZE);
+            if (!isInBounds(gridRow, gridCol)) return;
             if (game.phase === 'move') {
                 const player = game.players[game.currentPlayer];
-                const dr = gridY - player.r;
-                const dc = gridX - player.c;
+                const dr = gridY - player.row;
+                const dc = gridX - player.col;
                 tryMove(dr, dc);
             } else if (game.phase === 'wall') {
                 handleMobileWallClick(gridY, gridX);
