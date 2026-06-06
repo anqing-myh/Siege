@@ -1947,27 +1947,57 @@
         }
     }
     function handleMobileWallClick(r, c) {
-        // 第一次点击：进入放墙模式，选中墙的位置
+        if (game.gameOver || game.phase !== 'wall' || game.aiThinking) return;
+
+        const p = game.currentPlayer;
+        const pl = game.players[p];
+
+        // 第一次点击选中墙位置
         if (!game.selectedWall) {
-            game.selectedWall = {
-                r,
-                c,
-                dir: 'h'
-            };
+            game.selectedWall = { r, c, dir: null };
             drawBoard();
             updateUI();
             return;
         }
-        // 第二次点击同一个位置：确认放墙
+
+        // 如果点击同一个格子，尝试确认方向并放置
         if (game.selectedWall.r === r && game.selectedWall.c === c) {
-            confirmWall();
+            if (!game.selectedWall.dir) return; // 没有选择方向
+            selectWallDir(...directionToDelta(game.selectedWall.dir)); // 调用原有方向选择函数
+            confirmWall(); // 调用确认函数
+            game.selectedWall = null;
             return;
         }
-        // 点击不同位置：更新墙的位置
+
+        // 点击不同格子，更新墙位置并自动计算方向
+        const dr = r - game.selectedWall.r;
+        const dc = c - game.selectedWall.c;
+
+        // 根据玩家点击的方向选择上下左右
+        if (Math.abs(dr) > Math.abs(dc)) {
+            game.selectedWall.dir = dr > 0 ? 'bottom' : 'top';
+        } else if (dc !== 0) {
+            game.selectedWall.dir = dc > 0 ? 'right' : 'left';
+        } else {
+            game.selectedWall.dir = null; // 同格点击但没有移动
+        }
+
+        // 更新位置
         game.selectedWall.r = r;
         game.selectedWall.c = c;
+
         drawBoard();
         updateUI();
+    }
+
+    // 辅助：将方向转换为 delta(row,col)
+    function directionToDelta(dir) {
+        return {
+            top: [-1, 0],
+            bottom: [1, 0],
+            left: [0, -1],
+            right: [0, 1]
+        }[dir] || [0, 0];
     }
 
     function isLocalPlayerTurn() {
@@ -2012,6 +2042,61 @@
     // ---- 移动端点击事件 ----
     if (isMobile) {
         const canvas = document.getElementById('boardCanvas');
+        // 移动端点击移动：使用 BFS 路径长度计算步数
+        function handleMobileMoveClick(gridY, gridX) {
+            if (game.gameOver || game.phase !== 'move' || game.aiThinking) return;
+            const p = game.currentPlayer;
+            const pl = game.players[p];
+            // BFS 找最短路径到目标格
+            const queue = [{ row: pl.row, col: pl.col, path: [] }];
+            const visited = new Set();
+            visited.add(`${pl.row},${pl.col}`);
+            let found = null;
+            while (queue.length > 0) {
+                const cur = queue.shift();
+                const path = cur.path.concat({ row: cur.row, col: cur.col });
+                if (cur.row === gridY && cur.col === gridX) {
+                    found = path;
+                    break;
+                }
+                if (path.length > game.stepRemaining) continue; // 步数不足
+                const neighbors = getNeighbors(cur.row, cur.col);
+                for (const nb of neighbors) {
+                    const key = `${nb.row},${nb.col}`;
+                    const oppIdx = 1 - p;
+                    if (!visited.has(key) && !(nb.row === game.players[oppIdx].row && nb.col === game.players[oppIdx].col)) {
+                        visited.add(key);
+                        queue.push({ row: nb.row, col: nb.col, path });
+                    }
+                }
+            }
+            if (!found) return; // 不可达格子点击无效
+            // 消耗步数，更新 movePath
+            const cost = found.length - 1;
+            if (cost > game.stepRemaining) return;
+            const path = game.movePath;
+            const lastStep = path.length >= 2 ? path[path.length - 2] : null;
+            if (lastStep && lastStep.row === gridY && lastStep.col === gridX) {
+                path.pop();
+                game.stepRemaining += cost;
+            } else {
+                path.push({ row: gridY, col: gridX });
+                game.stepRemaining -= cost;
+            }
+            // 更新玩家位置
+            pl.row = gridY;
+            pl.col = gridX;
+            drawBoard();
+            updateUI();
+            playMoveSound();
+            // 移动端自动进入放墙阶段
+            if (game.stepRemaining <= 0 && game.phase === 'move') {
+                enterWallPhase();
+            }
+            // 联机同步
+            if (game.mode === 'p2p') syncGameState();
+        }
+        // 移动端点击事件绑定
         canvas.addEventListener('pointerdown', (e) => {
             if (!canOperate()) return;
             const rect = canvas.getBoundingClientRect();
@@ -2023,16 +2108,8 @@
             const gridY = Math.floor(y / CELL_SIZE);
             if (!isInBounds(gridY, gridX)) return;
             if (game.phase === 'move') {
-                const player = game.players[game.currentPlayer];
-                const dr = gridY - player.row;
-                const dc = gridX - player.col;
-                const moved = tryMove(dr, dc);
-                // 移动端：成功移动后立刻进入放墙阶段
-                if (moved && game.phase === 'move') {
-                    enterWallPhase();
-                }
-            }
-            else if (game.phase === 'wall') {
+                handleMobileMoveClick(gridY, gridX);
+            } else if (game.phase === 'wall') {
                 handleMobileWallClick(gridY, gridX);
             }
         });
