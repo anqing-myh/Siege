@@ -2040,6 +2040,7 @@
             if (game.gameOver || game.phase !== 'move' || game.aiThinking) return;
             const p = game.currentPlayer;
             const pl = game.players[p];
+
             // BFS 找最短路径到目标格
             const queue = [{ row: pl.row, col: pl.col, path: [] }];
             const visited = new Set();
@@ -2063,29 +2064,24 @@
                     }
                 }
             }
+
             if (!found) return; // 不可达格子点击无效
-            // 消耗步数，更新 movePath
-            const cost = found.length - 1;
-            if (cost > game.stepRemaining) return;
-            const path = game.movePath;
-            const lastStep = path.length >= 2 ? path[path.length - 2] : null;
-            if (lastStep && lastStep.row === gridY && lastStep.col === gridX) {
-                path.pop();
-                game.stepRemaining += cost;
-            } else {
-                path.push({ row: gridY, col: gridX });
-                game.stepRemaining -= cost;
-            }
-            // 更新玩家位置
+
+            // 直接消耗所有步数，禁止回溯
             pl.row = gridY;
             pl.col = gridX;
+            game.stepRemaining = 0;
+            game.movePath = [{ row: gridY, col: gridX }]; // 重置路径
+
             drawBoard();
             updateUI();
             playMoveSound();
-            // 移动端自动进入放墙阶段
-            if (game.stepRemaining <= 0 && game.phase === 'move') {
+
+            // 自动进入放墙阶段
+            if (game.phase === 'move') {
                 enterWallPhase();
             }
+
             // 联机同步
             if (game.mode === 'p2p') syncGameState();
         }
