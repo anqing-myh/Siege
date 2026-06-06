@@ -182,6 +182,45 @@
             font-size: 13px;
             color: #888;
         }
+        #bottomBar {
+            margin-top: 16px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 16px;
+            font-size: 14px;
+        }
+
+        #statsText {
+            color: #f0d4a0;
+        }
+
+        #aboutBtn,
+        #closeAboutBtn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 999;
+        }
+
+        .modal-box {
+            background: #fff;
+            color: #333;
+            padding: 20px;
+            border-radius: 10px;
+            max-width: 320px;
+            text-align: center;
+        }
         @media (max-width: 500px) {
             .game-container { padding: 16px; }
             canvas { width: 300px; height: 300px; }
@@ -239,12 +278,28 @@
             </div>
         </div>
     </div>
+    <div id="bottomBar">
+        <div id="statsText">战绩：您 0 胜 - 对方 0 胜</div>
+        <button id="aboutBtn">关于作者</button>
+    </div>
+
+    <div id="aboutOverlay" class="modal-overlay" style="display:none;">
+        <div class="modal-box">
+            <h3>关于作者</h3>
+            <p>作者来自浙江大学，是一名AI专业大一学生</p>
+            <p>这是我做出的第一款真正意义上的游戏</p>
+            <p>它除了基础的双人对战之外，还支持人机对战和联机功能</p>
+            <p>其实这是我的一个突发奇想，这个游戏从着手开始做，到配置部署服务器，再到后期缝缝补补，主要都在一天内完成</p>
+            <p>总之感谢游玩，后续还会继续优化体验。</p>
+            <button id="closeAboutBtn">关闭</button>
+        </div>
+    </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙</div>
 </div>
 <script>
 (function() {
     // ========== 配置：部署后修改这里的地址 ==========
-    const SERVER_URL = 'wss://siege.zeabur.app'; // 替换为您的Zeabur域名
+    const SERVER_URL = 'wss://siege-server.zeabur.app'; // 替换为您的Zeabur域名
     // ===============================================
 
     const BOARD_SIZE = 7;
@@ -275,6 +330,11 @@
         mode: 'pve',
         turnCount: 1,
         aiThinking: false,
+    };
+    const stats = {
+        pvp: { wins: 0, losses: 0, draws: 0 },
+        pve: { wins: 0, losses: 0, draws: 0 },
+        p2p: { wins: 0, losses: 0, draws: 0 }
     };
 
     // ---- DOM ----
@@ -378,11 +438,14 @@
             else game.winner = 'draw';
             game.players[0].regionSize = s0;
             game.players[1].regionSize = s1;
+            if (!game.resultRecorded) {
+                recordGameResult();
+                game.resultRecorded = true;
+            }
             return true;
         }
         return false;
     }
-
     // ---- 绘制 ----
     function drawBoard() {
         ctx.clearRect(0, 0, 420, 420);
@@ -464,103 +527,140 @@
 
     // ---- UI ----
     function updateUI() {
-    stepDisplay.textContent = game.stepRemaining;
-    turnCounter.textContent = '回合 ' + game.turnCount;
-    const p = game.currentPlayer;
+        stepDisplay.textContent = game.stepRemaining;
+        turnCounter.textContent = '回合 ' + game.turnCount;
+        const p = game.currentPlayer;
 
-    if (game.mode === 'pvp') {
-        // 本地双人模式，玩家1红色，玩家2蓝色
-        player1Label.textContent = '玩家1';
-        player1Label.style.color = '#d13f3f';
-        player2Label.textContent = '玩家2';
-        player2Label.style.color = '#3a6ea5';
+        if (game.mode === 'pvp') {
+            // 本地双人模式，玩家1红色，玩家2蓝色
+            player1Label.textContent = '玩家1';
+            player1Label.style.color = '#d13f3f';
+            player2Label.textContent = '玩家2';
+            player2Label.style.color = '#3a6ea5';
 
-        if (game.gameOver) {
-            let msg = '';
-            if (game.winner === 0) {
-                msg = '🔥 玩家1获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
-            } else if (game.winner === 1) {
-                msg = '🔥 玩家2获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
-            } else {
-                msg = '🤝 平局！双方区域相同';
+            if (game.gameOver) {
+                let msg = '';
+                if (game.winner === 0) {
+                    msg = '🔥 玩家1获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
+                } else if (game.winner === 1) {
+                    msg = '🔥 玩家2获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
+                } else {
+                    msg = '🤝 平局！双方区域相同';
+                }
+                statusMessage.textContent = msg;
+                statusMessage.className = 'status-text win-message';
+                return;
             }
+
+            let msg = `玩家${p + 1} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
+            if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
+            else msg += ' (WASD移动, J放墙)';
             statusMessage.textContent = msg;
-            statusMessage.className = 'status-text win-message';
-            return;
-        }
+            statusMessage.className = 'status-text';
 
-        let msg = `玩家${p + 1} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-        if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
-        else msg += ' (WASD移动, J放墙)';
-        statusMessage.textContent = msg;
-        statusMessage.className = 'status-text';
-
-    } else if (game.mode === 'pve') {
-        // 人机模式，玩家红色“您”，蓝色“电脑”
-        player1Label.textContent = '您';
-        player1Label.style.color = '#d13f3f';
-        player2Label.textContent = '电脑';
-        player2Label.style.color = '#3a6ea5';
-
-        if (game.gameOver) {
-            let msg = '';
-            if (game.winner === 0) {
-                msg = '🔥 您获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
-            } else if (game.winner === 1) {
-                msg = '🔥 电脑获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
-            } else {
-                msg = '🤝 平局！双方区域相同';
-            }
-            statusMessage.textContent = msg;
-            statusMessage.className = 'status-text win-message';
-            return;
-        }
-
-        let msg = `${p === 0 ? '您' : '电脑'} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-        if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
-        else msg += ' (WASD移动, J放墙)';
-        statusMessage.textContent = msg;
-        statusMessage.className = 'status-text';
-
-    } else if (game.mode === 'p2p') {
-        // 联机模式，“您”与“对方”颜色根据 wsPlayerIndex 分配
-        if (wsPlayerIndex === 0) {
-            // 自己为红色，另一方蓝色
+        } else if (game.mode === 'pve') {
+            // 人机模式，玩家红色“您”，蓝色“电脑”
             player1Label.textContent = '您';
             player1Label.style.color = '#d13f3f';
-            player2Label.textContent = '对方';
+            player2Label.textContent = '电脑';
             player2Label.style.color = '#3a6ea5';
-        } else if (wsPlayerIndex === 1) {
-            // 自己为蓝色，对方红色
-            player1Label.textContent = '对方';
-            player1Label.style.color = '#d13f3f';
-            player2Label.textContent = '您';
-            player2Label.style.color = '#3a6ea5';
-        }
 
-        const names = wsPlayerIndex === 0 ? ['您', '对方'] : ['对方', '您'];
-
-        if (game.gameOver) {
-            let msg = '';
-            if (game.winner === 0) {
-                msg = '🔥 ' + names[0] + '获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
-            } else if (game.winner === 1) {
-                msg = '🔥 ' + names[1] + '获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
-            } else {
-                msg = '🤝 平局！双方区域相同';
+            if (game.gameOver) {
+                let msg = '';
+                if (game.winner === 0) {
+                    msg = '🔥 您获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
+                } else if (game.winner === 1) {
+                    msg = '🔥 电脑获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
+                } else {
+                    msg = '🤝 平局！双方区域相同';
+                }
+                statusMessage.textContent = msg;
+                statusMessage.className = 'status-text win-message';
+                return;
             }
+
+            let msg = `${p === 0 ? '您' : '电脑'} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
+            if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
+            else msg += ' (WASD移动, J放墙)';
             statusMessage.textContent = msg;
-            statusMessage.className = 'status-text win-message';
-            return;
+            statusMessage.className = 'status-text';
+
+        } else if (game.mode === 'p2p') {
+            // 联机模式，“您”与“对方”颜色根据 wsPlayerIndex 分配
+            if (wsPlayerIndex === 0) {
+                // 自己为红色，另一方蓝色
+                player1Label.textContent = '您';
+                player1Label.style.color = '#d13f3f';
+                player2Label.textContent = '对方';
+                player2Label.style.color = '#3a6ea5';
+            } else if (wsPlayerIndex === 1) {
+                // 自己为蓝色，对方红色
+                player1Label.textContent = '对方';
+                player1Label.style.color = '#d13f3f';
+                player2Label.textContent = '您';
+                player2Label.style.color = '#3a6ea5';
+            }
+
+            const names = wsPlayerIndex === 0 ? ['您', '对方'] : ['对方', '您'];
+
+            if (game.gameOver) {
+                let msg = '';
+                if (game.winner === 0) {
+                    msg = '🔥 ' + names[0] + '获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
+                } else if (game.winner === 1) {
+                    msg = '🔥 ' + names[1] + '获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
+                } else {
+                    msg = '🤝 平局！双方区域相同';
+                }
+                statusMessage.textContent = msg;
+                statusMessage.className = 'status-text win-message';
+                return;
+            }
+
+            let msg = `${names[p]} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
+            if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
+            else msg += ' (WASD移动, J放墙)';
+            statusMessage.textContent = msg;
+            statusMessage.className = 'status-text';
+        }
+        updateStatsDisplay();
+    }
+    function getModeLabel() {
+        if (game.mode === 'pvp') return '双人对战';
+        if (game.mode === 'pve') return '单人对战';
+        if (game.mode === 'p2p') return '联机对战';
+        return '当前模式';
+    }
+
+    function getOpponentLabel() {
+        if (game.mode === 'pve') return '电脑';
+        if (game.mode === 'p2p') return '对手';
+        return '玩家2';
+    }
+
+    function updateStatsDisplay() {
+        const statsText = document.getElementById('statsText');
+        if (!statsText || !stats[game.mode]) return;
+
+        const s = stats[game.mode];
+
+        statsText.textContent =
+            `${getModeLabel()}战绩：您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
+    }
+
+    function recordGameResult() {
+        if (!stats[game.mode]) return;
+
+        if (game.winner === 0) {
+            stats[game.mode].wins++;
+        } else if (game.winner === 1) {
+            stats[game.mode].losses++;
+        } else if (game.winner === 'draw') {
+            stats[game.mode].draws++;
         }
 
-        let msg = `${names[p]} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-        if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
-        else msg += ' (WASD移动, J放墙)';
-        statusMessage.textContent = msg;
-        statusMessage.className = 'status-text';
+        updateStatsDisplay();
     }
-}
 
     // ---- 音效 ----
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -657,6 +757,7 @@
         game.winner = null;
         game.turnCount = 1;
         game.aiThinking = false;
+        game.resultRecorded = false;
 
         updateUI();
         drawBoard();
@@ -1960,6 +2061,24 @@
         if (!code) { p2pStatus.textContent = '⚠️ 请输入房间码'; p2pStatus.style.color = '#ffcc00'; return; }
         wsSend({ type: 'join', roomCode: code });
     });
+
+    const aboutBtn = document.getElementById('aboutBtn');
+    const aboutOverlay = document.getElementById('aboutOverlay');
+    const closeAboutBtn = document.getElementById('closeAboutBtn');
+
+    aboutBtn.onclick = () => {
+        aboutOverlay.style.display = 'flex';
+    };
+
+    closeAboutBtn.onclick = () => {
+        aboutOverlay.style.display = 'none';
+    };
+
+    aboutOverlay.onclick = (e) => {
+        if (e.target === aboutOverlay) {
+            aboutOverlay.style.display = 'none';
+        }
+    };
 
     // ---- 规则 ----
     document.getElementById('rulesBtn').addEventListener('click', showRulesModal);
