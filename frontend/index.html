@@ -701,7 +701,7 @@
         if (game.stepRemaining <= 0 && game.phase === 'move') enterWallPhase();
         // 联机同步
         if (game.mode === 'p2p' && ws && wsConnected) {
-            wsSend({ type: 'action', action: 'move', row: newRow, col: newCol, stepRemaining: game.stepRemaining, movePath: game.movePath, phase: game.phase });
+            wsSend({ type: 'action', action: 'move',from: wsPlayerIndex, row: newRow, col: newCol, stepRemaining: game.stepRemaining, movePath: game.movePath, phase: game.phase });
         }
         return true;
     }
@@ -748,7 +748,7 @@
 
         // 先同步，再判断游戏结束
         if (game.mode === 'p2p' && ws && wsConnected) {
-            wsSend({ type: 'action', action: 'wall', dir: dir });
+            wsSend({ type: 'action', action: 'wall',from: wsPlayerIndex, dir: dir });
         }       
 
         const over = checkGameOver();
@@ -1634,12 +1634,20 @@
     }
 
     function wsSend(msg) {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(msg));
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!msg.roomCode && wsRoomCode) {
+            msg.roomCode = wsRoomCode;  // 带上房间码
         }
+        ws.send(JSON.stringify(msg));
     }
 
     function handleWSMessage(msg) {
+        // 严格消息隔离：不是本房间消息直接忽略 
+        if (msg.roomCode && msg.roomCode !== wsRoomCode) {
+            // 该消息不是当前房间的，不处理
+            return;
+        }
+
         if (msg.type === 'created') {
             wsRoomCode = msg.roomCode;
             wsPlayerIndex = 0;
@@ -1682,15 +1690,21 @@
             p2pStatus.style.color = '#ff6b6b';
         }
         else if (msg.type === 'restart') {
+            // 服务器端强制重启指令等，直接重置
             resetGame();
         }
         else if (msg.type === 'reset_request') {
             // 只有房主响应重置请求
+            // 先显示请求提示
             if (wsPlayerIndex === 0) {
+                p2pStatus.textContent = '⏳ 对方请求新游戏... 正在重置';
+                p2pStatus.style.color = '#f0d4a0';
                 resetGame();
+                // 重置完毕同步状态给对方
                 wsSend({ 
                     type: 'sync', 
                     from: 0, 
+                    roomCode: wsRoomCode,
                     state: {
                         board: game.board,
                         players: game.players,
@@ -1703,6 +1717,8 @@
                         turnCount: game.turnCount,
                     }
                 });
+                p2pStatus.textContent = '✅ 新游戏已开始';
+                p2pStatus.style.color = '#5cb85c';
             }
         }
         else if (msg.type === 'sync') {
@@ -1723,6 +1739,7 @@
         }
         else if (msg.type === 'action') {
             // 对手操作
+            if (msg.from === wsPlayerIndex) return;
             if (msg.action === 'move') {
                 const p = game.currentPlayer;
                 game.players[p].row = msg.row;
@@ -1817,9 +1834,9 @@
     restartBtn.addEventListener('click', () => {
         if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
             if (wsPlayerIndex === 0) {
-                // 房主直接重置并通知对方
+                // 房主直接重置并同步状态
                 resetGame();
-                ws.send(JSON.stringify({
+                wsSend({
                     type: 'sync',
                     from: 0,
                     state: {
@@ -1833,18 +1850,17 @@
                         winner: game.winner,
                         turnCount: game.turnCount,
                     }
-                }));
+                });
             } else {
-                // 加入者发送重置请求
-                ws.send(JSON.stringify({ type: 'reset_request' }));
-                // 这里可以加个UI提示，表明请求已发送，等待房主响应
+                // 加入者发送重置请求给房主
+                wsSend({ type: 'reset_request' });
+                p2pStatus.textContent = '⏳ 已请求新游戏，等待房主响应...';
+                p2pStatus.style.color = '#f0d4a0';
             }
         } else {
-            // 其他模式直接重置
             resetGame();
         }
     });
-
     // ---- 房间操作 ----
     createRoomBtn.addEventListener('click', () => {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -1852,7 +1868,7 @@
             p2pStatus.style.color = '#ffcc00';
             return;
         }
-        wsSend({ type: 'create' });
+        wsSend({ type: 'create' }); // 已经在 wsSend 中带 roomCode，创建时 roomCode 为空也无所谓
     });
 
     joinRoomBtn.addEventListener('click', () => {
@@ -1863,7 +1879,7 @@
         }
         const code = roomCodeInput.value.trim().toUpperCase();
         if (!code) { p2pStatus.textContent = '⚠️ 请输入房间码'; p2pStatus.style.color = '#ffcc00'; return; }
-        wsSend({ type: 'join', roomCode: code });
+        wsSend({ type: 'join', roomCode: code });  // 这里我们显式带入了用户输入房间码，覆盖 wsSend 的自动填充
     });
 
     // ---- 规则 ----
