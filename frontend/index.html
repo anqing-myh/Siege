@@ -293,9 +293,9 @@
             <h3>关于作者</h3>
             <p>作者:玄灵</p>
             <p>来自浙江大学，是一名AI专业大一学生</p>
-            <p>这是我做出的第一款真正意义上的游戏</p>
+            <p>这是我做出的第一款真正意义上的游戏，总体代码量在2500行左右</p>
             <p>它除了基础的双人对战之外，还支持人机对战和联机功能</p>
-            <p>其实这是我的一个突发奇想，这个游戏从着手开始做，到配置部署服务器，再到后期缝缝补补，二十余次的代码更新，主要都在一天内完成</p>
+            <p>其实这是我的一个突发奇想，这个游戏从着手开始做，到配置部署服务器，再到后期缝缝补补，三十余次的代码更新，主要都在两天内完成</p>
             <p> · 特别鸣谢zym小姐的倾情支持</p>
             <p>总之感谢游玩，后续还会继续优化体验,希望大家玩得开心！</p>
             <p>2026/6/6</p>
@@ -775,6 +775,7 @@
         game.wallDir = null;
         game.gameOver = false;
         game.winner = null;
+        game.selectedWall = null;
         game.turnCount = 1;
         game.aiThinking = false;
         game.resultRecorded = false;
@@ -920,6 +921,8 @@
         const pl = game.players[game.currentPlayer];
         game.movePath = [{row: pl.row, col: pl.col}];
         game.wallDir = null;
+        game.selectedWall = null;
+        updateUI();
         drawBoard();
         if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) {
             setTimeout(() => aiTurn(), 100);
@@ -1952,52 +1955,42 @@
         const p = game.currentPlayer;
         const pl = game.players[p];
 
-        // 第一次点击选中墙位置
-        if (!game.selectedWall) {
-            game.selectedWall = { r, c, dir: null };
-            drawBoard();
-            updateUI();
+        // 放墙起点固定为当前玩家所在格子
+        const dr = r - pl.row;
+        const dc = c - pl.col;
+
+        // 只能点击上下左右相邻格子
+        if (Math.abs(dr) + Math.abs(dc) !== 1) return;
+
+        const dirMap = {
+            '-1,0': 'top',
+            '1,0': 'bottom',
+            '0,-1': 'left',
+            '0,1': 'right'
+        };
+
+        const dir = dirMap[`${dr},${dc}`];
+        if (!dir) return;
+
+        // 如果两格之间已经有墙，无效
+        const oppDir = {
+            top: 'bottom',
+            bottom: 'top',
+            left: 'right',
+            right: 'left'
+        }[dir];
+
+        if (game.board[pl.row][pl.col].walls[dir]) return;
+        if (game.board[r][c].walls[oppDir]) return;
+
+        // 第一次点击相邻格：选择方向
+        if (game.wallDir !== dir) {
+            selectWallDir(dr, dc);
             return;
         }
 
-        // 如果点击同一个格子，尝试确认方向并放置
-        if (game.selectedWall.r === r && game.selectedWall.c === c) {
-            if (!game.selectedWall.dir) return; // 没有选择方向
-            selectWallDir(...directionToDelta(game.selectedWall.dir)); // 调用原有方向选择函数
-            confirmWall(); // 调用确认函数
-            game.selectedWall = null;
-            return;
-        }
-
-        // 点击不同格子，更新墙位置并自动计算方向
-        const dr = r - game.selectedWall.r;
-        const dc = c - game.selectedWall.c;
-
-        // 根据玩家点击的方向选择上下左右
-        if (Math.abs(dr) > Math.abs(dc)) {
-            game.selectedWall.dir = dr > 0 ? 'bottom' : 'top';
-        } else if (dc !== 0) {
-            game.selectedWall.dir = dc > 0 ? 'right' : 'left';
-        } else {
-            game.selectedWall.dir = null; // 同格点击但没有移动
-        }
-
-        // 更新位置
-        game.selectedWall.r = r;
-        game.selectedWall.c = c;
-
-        drawBoard();
-        updateUI();
-    }
-
-    // 辅助：将方向转换为 delta(row,col)
-    function directionToDelta(dir) {
-        return {
-            top: [-1, 0],
-            bottom: [1, 0],
-            left: [0, -1],
-            right: [0, 1]
-        }[dir] || [0, 0];
+        // 第二次点击同一个方向的相邻格：确认放墙
+        confirmWall();
     }
 
     function isLocalPlayerTurn() {
