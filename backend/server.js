@@ -31,12 +31,12 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'created', roomCode: code, playerIndex: 0 }));
       }
       else if (msg.type === 'join') {
-        const code = msg.roomCode.toUpperCase();
-        const room = rooms.get(code);
-        if (!room) {
+        const code = msg.roomCode?.toUpperCase();
+        if (!code || !rooms.has(code)) {
           ws.send(JSON.stringify({ type: 'error', message: '房间不存在' }));
           return;
         }
+        const room = rooms.get(code);
         if (room.length >= 2) {
           ws.send(JSON.stringify({ type: 'error', message: '房间已满' }));
           return;
@@ -45,33 +45,48 @@ wss.on('connection', (ws) => {
         currentRoom = code;
         playerIndex = 1;
         ws.send(JSON.stringify({ type: 'joined', roomCode: code, playerIndex: 1 }));
-        // 通知房主有玩家加入
+        // 通知房主对手加入
         room[0].ws.send(JSON.stringify({ type: 'opponent_joined' }));
       }
-      else if (msg.type === 'action' || msg.type === 'sync') {
-        if (currentRoom) {
-          const room = rooms.get(currentRoom);
-          if (room) {
-            const target = room.find(p => p.playerIndex !== playerIndex);
-            if (target && target.ws.readyState === 1) {
-              target.ws.send(JSON.stringify({ ...msg, from: playerIndex }));
+      else if (msg.type === 'action' || msg.type === 'sync' || msg.type === 'restart') {
+        // 所有游戏消息都严格按房间广播
+        if (!currentRoom || !rooms.has(currentRoom)) return;
+        const room = rooms.get(currentRoom);
+        for (const p of room) {
+          if (p.ws !== ws && p.ws.readyState === 1) {
+            p.ws.send(JSON.stringify({ ...msg, from: playerIndex }));
+          }
+        }
+      }
+      else if (msg.type === 'reset_request') {
+        if (!currentRoom || !rooms.has(currentRoom)) return;
+        const room = rooms.get(currentRoom);
+        // 房主处理重置请求
+        if (playerIndex === 0) {
+          for (const p of room) {
+            if (p.ws.readyState === 1) {
+              p.ws.send(JSON.stringify({ type: 'restart' }));
             }
           }
         }
       }
     } catch (e) {
-      // 忽略解析错误
+      console.error('消息解析错误:', e);
     }
   });
 
   ws.on('close', () => {
-    if (currentRoom) {
+    if (currentRoom && rooms.has(currentRoom)) {
       const room = rooms.get(currentRoom);
-      if (room) {
-        const other = room.find(p => p.playerIndex !== playerIndex);
-        if (other && other.ws.readyState === 1) {
-          other.ws.send(JSON.stringify({ type: 'opponent_left' }));
-        }
+      const other = room.find(p => p.playerIndex !== playerIndex);
+      if (other && other.ws.readyState === 1) {
+        other.ws.send(JSON.stringify({ type: 'opponent_left' }));
+      }
+      // 移除当前玩家
+      const remaining = room.filter(p => p.ws !== ws);
+      if (remaining.length > 0) {
+        rooms.set(currentRoom, remaining);
+      } else {
         rooms.delete(currentRoom);
       }
     }
@@ -79,6 +94,4 @@ wss.on('connection', (ws) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log('围城服务器已启动，端口:', PORT);
-});
+server.listen(PORT, () => console.log('围城服务器已启动，端口:', PORT));

@@ -1634,9 +1634,27 @@
     }
 
     function wsSend(msg) {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(msg));
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            p2pStatus.textContent = '⚠️ 未连接到服务器';
+            p2pStatus.style.color = '#ffcc00';
+            return false;
         }
+
+        const payload = { ...msg };
+
+        // 除了 create，其他联机消息都带上当前房间码
+        if (msg.type !== 'create') {
+            if (!wsRoomCode) {
+                p2pStatus.textContent = '⚠️ 尚未加入房间';
+                p2pStatus.style.color = '#ffcc00';
+                return false;
+            }
+
+            payload.roomCode = wsRoomCode;
+        }
+
+        ws.send(JSON.stringify(payload));
+        return true;
     }
 
     function handleWSMessage(msg) {
@@ -1819,7 +1837,7 @@
             if (wsPlayerIndex === 0) {
                 // 房主直接重置并通知对方
                 resetGame();
-                ws.send(JSON.stringify({
+                wsSend({
                     type: 'sync',
                     from: 0,
                     state: {
@@ -1833,10 +1851,10 @@
                         winner: game.winner,
                         turnCount: game.turnCount,
                     }
-                }));
+                });
             } else {
                 // 加入者发送重置请求
-                ws.send(JSON.stringify({ type: 'reset_request' }));
+                wsSend({ type: 'reset_request' });
                 // 这里可以加个UI提示，表明请求已发送，等待房主响应
             }
         } else {
