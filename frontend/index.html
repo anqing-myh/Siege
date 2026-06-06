@@ -1699,21 +1699,6 @@
                 master.ws.send(JSON.stringify({ type: 'sync', to: wsPlayerIndex }));
             }
         }
-        else if (msg.type === 'leave') {
-            const room = rooms.get(wsRoomCode);
-            if (room) {
-                room.players = room.players.filter(p => p.ws !== ws);
-                // 如果房主离开，重新选房主或解散房间
-                if (room.players.length === 0) {
-                    rooms.delete(wsRoomCode);
-                } else if (room.host === ws) {
-                    room.host = room.players[0].ws;
-                    broadcastToRoom(room, { type: 'host_changed' });
-                }
-            }
-            wsRoomCode = null;
-            wsPlayerIndex = null;
-        }
         else if (msg.type === 'opponent_joined') {
             p2pStatus.textContent = '✅ 对手已加入！游戏开始';
             p2pStatus.style.color = '#5cb85c';
@@ -1725,6 +1710,17 @@
         else if (msg.type === 'error') {
             p2pStatus.textContent = '❌ ' + msg.message;
             p2pStatus.style.color = '#ff6b6b';
+        }
+        else if (msg.type === 'room_closed') {
+            wsRoomCode = null;
+            wsPlayerIndex = null;
+            //alert('房主已离开，房间已解散');
+            p2pStatus.textContent = '房主已离开，房间已解散';
+            p2pStatus.style.color = '#ff6b6b';
+            // 这里可以重置界面，切换回单机模式等
+            game.mode = 'pve';
+            updateUI();
+            drawBoard();
         }
         else if (msg.type === 'restart') {
             resetGame();
