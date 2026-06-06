@@ -1642,8 +1642,11 @@
 
         const payload = { ...msg };
 
-        // 除了 create，其他联机消息都带上当前房间码
-        if (msg.type !== 'create') {
+        // create 和 join 不能强制要求已有 wsRoomCode
+        // 因为 create/join 成功后，服务器才会返回房间码
+        const noRoomCodeNeeded = ['create', 'join'].includes(msg.type);
+
+        if (!noRoomCodeNeeded) {
             if (!wsRoomCode) {
                 p2pStatus.textContent = '⚠️ 尚未加入房间';
                 p2pStatus.style.color = '#ffcc00';
