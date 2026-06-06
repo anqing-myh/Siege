@@ -1688,7 +1688,31 @@
             p2pStatus.textContent = '✅ 已加入房间 ' + msg.roomCode;
             p2pStatus.style.color = '#5cb85c';
             game.mode = 'p2p';
-            resetGame();
+            wsSend({ type: 'sync_request' });
+        }
+        else if (msg.type === 'sync_request') {
+            if (!currentRoom || !rooms.has(currentRoom)) return;
+            const room = rooms.get(currentRoom);
+            // 只让房主响应
+            const master = room.find(p => p.playerIndex === 0);
+            if (master && master.ws.readyState === 1 && master.ws !== ws) {
+                master.ws.send(JSON.stringify({ type: 'sync', to: wsPlayerIndex }));
+            }
+        }
+        else if (msg.type === 'leave') {
+            const room = rooms.get(wsRoomCode);
+            if (room) {
+                room.players = room.players.filter(p => p.ws !== ws);
+                // 如果房主离开，重新选房主或解散房间
+                if (room.players.length === 0) {
+                    rooms.delete(wsRoomCode);
+                } else if (room.host === ws) {
+                    room.host = room.players[0].ws;
+                    broadcastToRoom(room, { type: 'host_changed' });
+                }
+            }
+            wsRoomCode = null;
+            wsPlayerIndex = null;
         }
         else if (msg.type === 'opponent_joined') {
             p2pStatus.textContent = '✅ 对手已加入！游戏开始';
@@ -1727,7 +1751,7 @@
             }
         }
         else if (msg.type === 'sync') {
-            if (msg.from === 0) {
+            if (msg.from === 0 && msg.state) {
                 game.board = msg.state.board;
                 game.players = msg.state.players;
                 game.currentPlayer = msg.state.currentPlayer;
@@ -1872,6 +1896,13 @@
             p2pStatus.textContent = '⚠️ 未连接到服务器';
             p2pStatus.style.color = '#ffcc00';
             return;
+        }
+        if (wsRoomCode) {
+            wsSend({ type: 'leave' }); // 新增类型 leave，服务器可以忽略或做清理
+            wsRoomCode = null;
+            wsPlayerIndex = null;
+            p2pStatus.textContent = '⚠️ 已离开原房间';
+            p2pStatus.style.color = '#ffcc00';
         }
         wsSend({ type: 'create' });
     });
