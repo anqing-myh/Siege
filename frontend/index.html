@@ -666,8 +666,8 @@
             }
 
             let msg = `玩家${p + 1} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-            if (game.phase === 'wall' && !isMobile()) msg += ' (WASD选方向, 空格确认, Q取消)';
-            else if(!isMobile())msg += ' (WASD移动, J放墙)';
+            if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
+            else if(!isMobile)msg += ' (WASD移动, J放墙)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
 
@@ -693,8 +693,8 @@
             }
 
             let msg = `${p === 0 ? '您' : '电脑'} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-            if (game.phase === 'wall' && !isMobile()) msg += ' (WASD选方向, 空格确认, Q取消)';
-            else if(!isMobile())msg += ' (WASD移动, J放墙)';
+            if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
+            else if(!isMobile)msg += ' (WASD移动, J放墙)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
 
@@ -731,8 +731,8 @@
             }
 
             let msg = `${names[p]} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-            if (game.phase === 'wall' && !isMobile()) msg += ' (WASD选方向, 空格确认, Q取消)';
-            else if(!isMobile())msg += ' (WASD移动, J放墙)';
+            if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
+            else if(!isMobile)msg += ' (WASD移动, J放墙)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
         }
@@ -2179,7 +2179,7 @@
             if (game.mode === 'p2p') syncGameState();
         }
         // 移动端点击事件绑定
-        canvas.addEventListener('pointerdown', (e) => {
+        canvas.addEventListener('click', (e) => {
             if (!canOperate()) return;
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
