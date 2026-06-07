@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <title>围城Siege - 1v1回合制棋类博弈游戏 - 玄灵</title>
     <link rel="icon" sizes="16x16 32x32 48x48" href="favicon.ico" type="image/x-icon">
     <meta name="description" content="和好友在线联机或人机对战的回合制棋类游戏，创建房间即可对战，无需下载。">
@@ -94,7 +95,6 @@
         }
         .info-bottom-row {
             display: flex;
-            justify-content: space-between;
             align-items: center;
             gap: 16px;
         }
@@ -731,8 +731,8 @@
             }
 
             let msg = `${names[p]} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-            if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
-            else msg += ' (WASD移动, J放墙)';
+            if (game.phase === 'wall' && !isMobile()) msg += ' (WASD选方向, 空格确认, Q取消)';
+            else if(!isMobile())msg += ' (WASD移动, J放墙)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
         }
