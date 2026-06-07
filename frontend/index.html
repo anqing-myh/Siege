@@ -404,7 +404,6 @@
 
     let evalCache = new Map();
     let mandatoryCache = new Map();
-    let neighborCache = new Map();
 
     // ---- 游戏状态 ----
     let game = {
@@ -1061,7 +1060,6 @@
             // 延迟极小时间让UI刷新，再执行搜索
             evalCache.clear();
             mandatoryCache.clear();
-            neighborCache.clear();
             setTimeout(() => {
             const bestAction = aiSearch(3);
             if (!bestAction) {
@@ -1266,7 +1264,7 @@
                     reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 }
                 if (cur.steps >= 3) continue;
-                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited.has(key) && !(nb.row === state.players[opp].row && nb.col === state.players[opp].col)) {
@@ -1362,7 +1360,7 @@
                     reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 }
                 if (cur.steps >= 3) continue;
-                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited.has(key) && !(nb.row === state.players[opp].row && nb.col === state.players[opp].col)) {
@@ -1515,15 +1513,12 @@
             // ---------- 必经格抢占逻辑 ----------
             // 如果双方之间存在“必须经过”的关键格，并且AI当前3步内到不了，
             // 那么奖励AI向该格靠近，避免残局时错过咽喉点。
-            if (!sep) {
+            if (!sep && game.turnCount >= 10) {
                 const mandatoryCells = findMandatoryCellsBetweenPlayersCached(state, p);
-
                 if (mandatoryCells.length > 0) {
                     let bestMandatory = null;
-
                     for (const cell of mandatoryCells) {
                         if (!Number.isFinite(cell.distFromAI)) continue;
-
                         // 重点处理：AI 不能在当前回合3步内到达的必经格
                         if (cell.distFromAI > 3) {
                             if (
@@ -1534,7 +1529,6 @@
                             }
                         }
                     }
-
                     if (bestMandatory) {
                         // 越接近必经格，分数越高
                         score += Math.max(0, 12 - bestMandatory.distFromAI) * 35;
@@ -1784,7 +1778,7 @@
                     continue;
                 }
                 if (cur.path.length >= 10) continue;
-                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited.has(key) || (nb.row === r2 && nb.col === c2)) {
@@ -1835,7 +1829,7 @@
             visited0.add(`${players[0].row},${players[0].col}`);
             while (queue0.length) {
                 const cur = queue0.shift();
-                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited0.has(key)) {
@@ -1852,7 +1846,7 @@
             visited1.add(`${players[1].row},${players[1].col}`);
             while (queue1.length) {
                 const cur = queue1.shift();
-                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited1.has(key)) {
@@ -1864,15 +1858,7 @@
             const size1 = visited1.size;
             return [size0, size1, true];
         }
-        function getNeighborsFromStateCached(state, r, c) {
-            const key = getStateKey(state, 0) + `|nb|${r},${c}`;
-            if (neighborCache.has(key)) {
-                return neighborCache.get(key);
-            }
-            const result = getNeighborsFromState(state, r, c);
-            neighborCache.set(key, result);
-            return result;
-        }
+
         function getNeighborsFromState(state, r, c) {
             const dirs = [
                 { dr: -1, dc: 0, side: 'top' },
@@ -1905,7 +1891,7 @@
 
             while (queue.length > 0) {
                 const cur = queue.shift();
-                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
 
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
