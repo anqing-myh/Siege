@@ -2271,13 +2271,6 @@
         return game.currentPlayer === wsPlayerIndex;
     }
 
-    function isPlayerInputLocked() {
-        if (game.gameOver) return true;
-        if (game.mode === 'pve') return game.aiThinking; // 只在AI回合锁定玩家
-        if (game.mode === 'pvp') return false;          // 本地双人不锁定
-        if (game.mode === 'p2p') return !isLocalPlayerTurn() || game.aiThinking; // 联机模式只允许自己的回合操作
-        return true;
-    }
     function isTypingInRoomCodeInput(e) {
         return e.target && e.target.id === 'roomCodeInput';
     }
@@ -2291,10 +2284,6 @@
     if (!isMobile) {
         document.addEventListener('keydown', (e) => {
             if (isTypingInRoomCodeInput(e)) return;
-            if (isPlayerInputLocked()) {
-                e.preventDefault();
-                return;
-            }
             const key = e.key;
             if (!canOperate()) return;
             if (key === 'w' || key === 'W' || key === 'ArrowUp') {
@@ -2382,7 +2371,6 @@
         }
         // 移动端点击事件绑定
         canvas.addEventListener('click', (e) => {
-            if (isPlayerInputLocked()) return;
             if (!canOperate()) return;
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
