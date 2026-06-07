@@ -666,8 +666,8 @@
             }
 
             let msg = `玩家${p + 1} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-            if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
-            else msg += ' (WASD移动, J放墙)';
+            if (game.phase === 'wall' && !isMobile()) msg += ' (WASD选方向, 空格确认, Q取消)';
+            else if(!isMobile())msg += ' (WASD移动, J放墙)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
 
@@ -693,8 +693,8 @@
             }
 
             let msg = `${p === 0 ? '您' : '电脑'} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
-            if (game.phase === 'wall') msg += ' (WASD选方向, 空格确认, Q取消)';
-            else msg += ' (WASD移动, J放墙)';
+            if (game.phase === 'wall' && !isMobile()) msg += ' (WASD选方向, 空格确认, Q取消)';
+            else if(!isMobile())msg += ' (WASD移动, J放墙)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
 
