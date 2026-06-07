@@ -382,6 +382,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
+        <br>感谢游玩！
     </div>
 </div>
 <script>
@@ -451,11 +452,11 @@
 
     // ---- 是否允许当前玩家操作 ----
     function canOperate() {
-        if (game.aiThinking) return false;
-        if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) return false;
-        if (game.mode === 'p2p' && !isLocalPlayerTurn() && !game.gameOver) return false;
         if (game.gameOver) return false;
-        return true;
+        if (game.mode === 'pve') return game.currentPlayer === 0 && !game.aiThinking;
+        if (game.mode === 'p2p') return isLocalPlayerTurn() && !game.aiThinking;
+        if (game.mode === 'pvp') return true;
+        return false;
     }
 
     function getNeighbors(r, c) {
@@ -655,7 +656,7 @@
             let msg = `玩家${p + 1} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
             if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
             else if(!isMobile)msg += ' (WASD移动, J放墙)';
-            else if(game.phase === 'wall' && isMobile)msg += ' (点击两次确认放置)';
+            else if(game.phase === 'wall' && isMobile)msg += ' (双击确认放置)';
             else msg+=' (点击移动)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
@@ -684,7 +685,7 @@
             let msg = `${p === 0 ? '您' : '电脑'} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
             if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
             else if(!isMobile)msg += ' (WASD移动, J放墙)';
-            else if(game.phase === 'wall' && isMobile)msg += ' (点击两次确认放置)';
+            else if(game.phase === 'wall' && isMobile)msg += ' (双击确认放置)';
             else msg+=' (点击移动)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
@@ -724,7 +725,7 @@
             let msg = `${names[p]} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
             if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
             else if(!isMobile)msg += ' (WASD移动, J放墙)';
-            else if(game.phase === 'wall' && isMobile)msg += ' (点击两次确认放置)';
+            else if(game.phase === 'wall' && isMobile)msg += ' (双击确认放置)';
             else msg+=' (点击移动)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
@@ -2123,6 +2124,7 @@
         const canvas = document.getElementById('boardCanvas');
         // 移动端点击移动：使用 BFS 路径长度计算步数
         function handleMobileMoveClick(gridY, gridX) {
+            if (!canOperate()) return;
             if (game.gameOver || game.phase !== 'move' || game.aiThinking) return;
             const p = game.currentPlayer;
             const pl = game.players[p];
