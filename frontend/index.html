@@ -371,7 +371,7 @@
             <h3>关于作者</h3>
             <p>作者:玄灵</p>
             <p>来自浙江大学，是一名AI专业大一学生</p>
-            <p>这是我做出的第一款真正意义上的游戏，总体代码量在2500行左右</p>
+            <p>这是我做出的第一款真正意义上的游戏，总体代码量在2700行左右</p>
             <p>它除了基础的双人对战之外，还支持人机对战和联机功能</p>
             <p>其实这是我的一个突发奇想，这个游戏从着手开始做，到配置部署服务器，再到后期缝缝补补，三十余次的代码更新，主要都在两天内完成</p>
             <p> · 特别鸣谢zym小姐的倾情支持</p>
@@ -382,13 +382,13 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
+        <br>版本信息：Version 2.0.1 2026/6/7   感谢游玩！
     </div>
 </div>
 <script>
 (function() {
     // ========== 配置：部署后修改这里的地址 ==========
-    const SERVER_URL = 'wss://siege-server.zeabur.app'; // 替换为您的Zeabur域名
-    // ===============================================
+    const SERVER_URL = 'wss://siege-server.zeabur.app'; 
 
     const BOARD_SIZE = 7;
     const CELL_SIZE = 60;
@@ -400,6 +400,9 @@
     let wsPlayerIndex = null; // 0=房主(红) 1=加入者(蓝)
     let wsRoomCode = null;
     let wsConnected = false;
+
+    let evalCache = new Map();
+    let mandatoryCache = new Map();
 
     // ---- 游戏状态 ----
     let game = {
@@ -451,11 +454,33 @@
 
     // ---- 是否允许当前玩家操作 ----
     function canOperate() {
-        if (game.aiThinking) return false;
-        if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) return false;
-        if (game.mode === 'p2p' && !isLocalPlayerTurn() && !game.gameOver) return false;
         if (game.gameOver) return false;
-        return true;
+        if (game.mode === 'pve') return game.currentPlayer === 0 && !game.aiThinking;
+        if (game.mode === 'pvp') return true;
+        if (game.mode === 'p2p') return isLocalPlayerTurn() && !game.aiThinking;
+        return false;
+    }
+
+    function getStateKey(state, maxPlayer) {
+        let parts = [];
+
+        parts.push(maxPlayer);
+        parts.push(state.players[0].row, state.players[0].col);
+        parts.push(state.players[1].row, state.players[1].col);
+
+        for (let r = 0; r < BOARD_SIZE; r++) {
+            for (let c = 0; c < BOARD_SIZE; c++) {
+                const w = state.board[r][c].walls;
+                let mask = 0;
+                if (w.top) mask |= 1;
+                if (w.right) mask |= 2;
+                if (w.bottom) mask |= 4;
+                if (w.left) mask |= 8;
+                parts.push(mask);
+            }
+        }
+
+        return parts.join(',');
     }
 
     function getNeighbors(r, c) {
@@ -655,7 +680,7 @@
             let msg = `玩家${p + 1} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
             if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
             else if(!isMobile)msg += ' (WASD移动, J放墙)';
-            else if(game.phase === 'wall' && isMobile)msg += ' (点击两次确认放置)';
+            else if(game.phase === 'wall' && isMobile)msg += ' (双击确认放置)';
             else msg+=' (点击移动)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
@@ -684,7 +709,7 @@
             let msg = `${p === 0 ? '您' : '电脑'} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
             if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
             else if(!isMobile)msg += ' (WASD移动, J放墙)';
-            else if(game.phase === 'wall' && isMobile)msg += ' (点击两次确认放置)';
+            else if(game.phase === 'wall' && isMobile)msg += ' (双击确认放置)';
             else msg+=' (点击移动)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
@@ -724,7 +749,7 @@
             let msg = `${names[p]} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
             if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
             else if(!isMobile)msg += ' (WASD移动, J放墙)';
-            else if(game.phase === 'wall' && isMobile)msg += ' (点击两次确认放置)';
+            else if(game.phase === 'wall' && isMobile)msg += ' (双击确认放置)';
             else msg+=' (点击移动)';
             statusMessage.textContent = msg;
             statusMessage.className = 'status-text';
@@ -737,7 +762,13 @@
         if (game.mode === 'p2p') return '联机对战';
         return '当前模式';
     }
-
+    function clearPendingPlayerInput() {
+        game.selectedCell = null;
+        game.selectedWall = null;
+        game.pendingAction = null;
+        game.hoveredCell = null;
+        game.hoveredWall = null;
+    }
     function getOpponentLabel() {
         if (game.mode === 'pve') return '电脑';
         if (game.mode === 'p2p') return '对手';
@@ -756,7 +787,6 @@
 
     function recordGameResult() {
         if (!stats[game.mode]) return;
-
         if (game.winner === 0) {
             stats[game.mode].wins++;
         } else if (game.winner === 1) {
@@ -764,7 +794,6 @@
         } else if (game.winner === 'draw') {
             stats[game.mode].draws++;
         }
-
         updateStatsDisplay();
     }
 
@@ -964,7 +993,6 @@
         if (isInBounds(oppRow, oppCol)) game.board[oppRow][oppCol].walls[oppDir] = true;
 
         // 先同步，再判断游戏结束   
-
         const over = checkGameOver();
         drawBoard();
         if (over) {
@@ -979,10 +1007,6 @@
             return;
         }
         playWallSound();
-        // 联机同步
-        //if (game.mode === 'p2p' && ws && wsConnected) {
-        //    wsSend({ type: 'action', action: 'wall', dir: dir });
-        //}
         endTurn();
         if (game.mode === 'p2p') {
             syncGameState();
@@ -1020,11 +1044,14 @@
     function aiTurn() {
             if (game.gameOver || game.aiThinking) return;
             game.aiThinking = true;
+            clearPendingPlayerInput();
             // 显示思考状态
             statusMessage.textContent = '🤔 AI 思考中...';
             updateUI();
             drawBoard();
             // 延迟极小时间让UI刷新，再执行搜索
+            evalCache.clear();
+            mandatoryCache.clear();
             setTimeout(() => {
             const bestAction = aiSearch(3);
             if (!bestAction) {
@@ -1071,8 +1098,7 @@
             }
             
             drawBoard();
-            updateUI();
-            
+            updateUI(); 
             // 检查游戏结束
             const over = checkGameOver();
             if (over) {
@@ -1085,11 +1111,11 @@
                 drawBoard();
                 game.aiThinking = false;
                 return;
-            }
-            
+            } 
             // 结束回合
-            endTurn();
             game.aiThinking = false;
+            clearPendingPlayerInput();
+            endTurn();
             }, 30);
         }
 
@@ -1151,7 +1177,7 @@
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
                 // 初始排序仅使用纯净的evaluateState，让深层搜索结果主导决策
-                const score = evaluateState(cloned, p);
+                const score = evaluateStateCached(cloned, p);
                 act._score = score;
             }
             actions.sort((a,b) => b._score - a._score);
@@ -1202,7 +1228,7 @@
                     }
                 } else {
                     // depth=1时，用纯净的evaluateState评估
-                    const score = evaluateState(cloned, p);
+                    const score = evaluateStateCached(cloned, p);
                     if (score > bestScore) {
                         bestScore = score;
                         bestAction = { moves: path.slice(1), wallDir: act.dir };
@@ -1269,7 +1295,7 @@
                 const oppR = pl.row + dr, oppC = pl.col + dc;
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-                act._score = evaluateState(cloned, maxPlayer);
+                act._score = evaluateStateCached(cloned, maxPlayer);
             }
             actions.sort((a,b) => a._score - b._score);
             let beta = Infinity;
@@ -1294,7 +1320,7 @@
                     continue;
                 }
                 if (depth <= 1) {
-                    const score = evaluateState(cloned, maxPlayer);
+                    const score = evaluateStateCached(cloned, maxPlayer);
                     if (score < bestScore) bestScore = score;
                     if (bestScore < alpha) return bestScore;
                     if (bestScore < beta) beta = bestScore;
@@ -1364,7 +1390,7 @@
                 const oppR = pl.row + dr, oppC = pl.col + dc;
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-                act._score = evaluateState(cloned, maxPlayer);
+                act._score = evaluateStateCached(cloned, maxPlayer);
             }
             actions.sort((a,b) => b._score - a._score);
             let alpha = -Infinity;
@@ -1389,7 +1415,7 @@
                     continue;
                 }
                 if (depth <= 1) {
-                    const score = evaluateState(cloned, maxPlayer);
+                    const score = evaluateStateCached(cloned, maxPlayer);
                     if (score > bestScore) bestScore = score;
                     if (bestScore > beta) return bestScore;
                     if (bestScore > alpha) alpha = bestScore;
@@ -1402,9 +1428,19 @@
             }
             return bestScore;
         }
+        
+        function evaluateStateCached(state, maxPlayer) {
+            const key = getStateKey(state, maxPlayer);
+            if (evalCache.has(key)) {
+                return evalCache.get(key);
+            }
+            const score = evaluateStateRaw(state, maxPlayer);
+            evalCache.set(key, score);
+            return score;
+        }
 
         // 评估状态（从maxPlayer视角）
-        function evaluateState(state, maxPlayer) {
+        function evaluateStateRaw(state, maxPlayer) {
             const [s0, s1, sep] = computeRegionsFromState(state);
             if (sep) {
                 const diff = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
@@ -1461,6 +1497,56 @@
                     score += bottlenecks * 15; // 多路径奖励
                 } else if (bottlenecks <= 1) {
                     score -= 50; // 单一路径惩罚
+                }
+            }
+
+            // ---------- 必经格抢占逻辑 ----------
+            // 如果双方之间存在“必须经过”的关键格，并且AI当前3步内到不了，
+            // 那么奖励AI向该格靠近，避免残局时错过咽喉点。
+            if (!sep && game.turnCount >= 10) {
+                const mandatoryCells = findMandatoryCellsBetweenPlayersCached(state, p);
+                if (mandatoryCells.length > 0) {
+                    let bestMandatory = null;
+                    for (const cell of mandatoryCells) {
+                        if (!Number.isFinite(cell.distFromAI)) continue;
+                        // 重点处理：AI 不能在当前回合3步内到达的必经格
+                        if (cell.distFromAI > 3) {
+                            if (
+                                bestMandatory === null ||
+                                cell.distFromAI < bestMandatory.distFromAI
+                            ) {
+                                bestMandatory = cell;
+                            }
+                        }
+                    }
+                    if (bestMandatory) {
+                        // 越接近必经格，分数越高
+                        score += Math.max(0, 12 - bestMandatory.distFromAI) * 35;
+
+                        // 如果对手比AI更接近这个必经格，AI更应该加速抢点
+                        if (bestMandatory.distFromOpp < bestMandatory.distFromAI) {
+                            score += Math.max(
+                                0,
+                                bestMandatory.distFromAI - bestMandatory.distFromOpp
+                            ) * 25;
+                        }
+
+                        // 如果AI已经逼近到4~5步范围，给额外奖励，鼓励继续赶过去
+                        if (bestMandatory.distFromAI <= 5) {
+                            score += 80;
+                        }
+                    } else {
+                        // 如果存在必经格且AI三步内可达，鼓励直接靠近/占住
+                        const closeMandatory = mandatoryCells[0];
+
+                        if (
+                            closeMandatory &&
+                            Number.isFinite(closeMandatory.distFromAI) &&
+                            closeMandatory.distFromAI <= 3
+                        ) {
+                            score += (4 - closeMandatory.distFromAI) * 60;
+                        }
+                    }
                 }
             }
             
@@ -1762,6 +1848,7 @@
             const size1 = visited1.size;
             return [size0, size1, true];
         }
+
         function getNeighborsFromState(state, r, c) {
             const dirs = [
                 { dr: -1, dc: 0, side: 'top' },
@@ -1781,7 +1868,103 @@
             }
             return result;
         }
+        function shortestDistanceFromState(state, sr, sc, tr, tc, blockedKey = null) {
+            if (sr === tr && sc === tc) return 0;
+            const startKey = `${sr},${sc}`;
+            const targetKey = `${tr},${tc}`;
+            if (blockedKey === startKey || blockedKey === targetKey) return Infinity;
+            const queue = [{ row: sr, col: sc, dist: 0 }];
+            const visited = new Set([startKey]);
+            while (queue.length > 0) {
+                const cur = queue.shift();
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                for (const nb of neighbors) {
+                    const key = `${nb.row},${nb.col}`;
+                    if (key === blockedKey) continue;
+                    if (visited.has(key)) continue;
+                    if (nb.row === tr && nb.col === tc) {
+                        return cur.dist + 1;
+                    }
+                    visited.add(key);
+                    queue.push({
+                        row: nb.row,
+                        col: nb.col,
+                        dist: cur.dist + 1
+                    });
+                }
+            }
+            return Infinity;
+        }
 
+        function isConnectedWithoutCell(state, sr, sc, tr, tc, blockedKey) {
+            return shortestDistanceFromState(state, sr, sc, tr, tc, blockedKey) !== Infinity;
+        }
+
+        function findMandatoryCellsBetweenPlayersCached(state, player) {
+            const key = getStateKey(state, player) + '|mandatory';
+            if (mandatoryCache.has(key)) {
+                return mandatoryCache.get(key);
+            }
+            const result = findMandatoryCellsBetweenPlayers(state, player);
+            mandatoryCache.set(key, result);
+            return result;
+        }
+
+        function findMandatoryCellsBetweenPlayers(state, player) {
+            const p = player;
+            const opp = 1 - p;
+            const pl = state.players[p];
+            const oppPl = state.players[opp];
+            const baseDist = shortestDistanceFromState(
+                state,
+                pl.row,
+                pl.col,
+                oppPl.row,
+                oppPl.col
+            );
+            if (baseDist === Infinity) return [];
+            const result = [];
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    // 不能把双方棋子本身当作必经格
+                    if (r === pl.row && c === pl.col) continue;
+                    if (r === oppPl.row && c === oppPl.col) continue;
+                    const blockedKey = `${r},${c}`;
+                    const stillConnected = isConnectedWithoutCell(
+                        state,
+                        pl.row,
+                        pl.col,
+                        oppPl.row,
+                        oppPl.col,
+                        blockedKey
+                    );
+                    if (!stillConnected) {
+                        const distFromAI = shortestDistanceFromState(
+                            state,
+                            pl.row,
+                            pl.col,
+                            r,
+                            c
+                        );
+                        const distFromOpp = shortestDistanceFromState(
+                            state,
+                            oppPl.row,
+                            oppPl.col,
+                            r,
+                            c
+                        );
+                        result.push({
+                            row: r,
+                            col: c,
+                            distFromAI,
+                            distFromOpp
+                        });
+                    }
+                }
+            }
+            result.sort((a, b) => a.distFromAI - b.distFromAI);
+            return result;
+        }
         // 寻找从start到target的最短路径（步数≤3），返回包含起点和终点的路径数组，若无则null
         // 评估一条路径是否有死路风险（路径中经过的格子是否让AI难以回头）
         function pathHasDeadEndRisk(path, state, player) {
@@ -2084,9 +2267,17 @@
         return game.currentPlayer === wsPlayerIndex;
     }
 
+    function isPlayerInputLocked() {
+        if (game.gameOver) return true;
+        if (game.mode === 'pve') return game.aiThinking; // 只在AI回合锁定玩家
+        if (game.mode === 'pvp') return false;          // 本地双人不锁定
+        if (game.mode === 'p2p') return !isLocalPlayerTurn() || game.aiThinking; // 联机模式只允许自己的回合操作
+        return true;
+    }
     // ---- 电脑端键盘事件 ----
     if (!isMobile) {
         document.addEventListener('keydown', (e) => {
+            if (isPlayerInputLocked()) { e.preventDefault(); return; }
             const key = e.key;
             if (!canOperate()) return;
             if (key === 'w' || key === 'W' || key === 'ArrowUp') {
@@ -2123,6 +2314,7 @@
         const canvas = document.getElementById('boardCanvas');
         // 移动端点击移动：使用 BFS 路径长度计算步数
         function handleMobileMoveClick(gridY, gridX) {
+            if (!canOperate()) return;
             if (game.gameOver || game.phase !== 'move' || game.aiThinking) return;
             const p = game.currentPlayer;
             const pl = game.players[p];
@@ -2173,6 +2365,7 @@
         }
         // 移动端点击事件绑定
         canvas.addEventListener('click', (e) => {
+            if (isPlayerInputLocked()) return;
             if (!canOperate()) return;
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
