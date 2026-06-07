@@ -738,7 +738,13 @@
         if (game.mode === 'p2p') return '联机对战';
         return '当前模式';
     }
-
+    function clearPendingPlayerInput() {
+        game.selectedCell = null;
+        game.selectedWall = null;
+        game.pendingAction = null;
+        game.hoveredCell = null;
+        game.hoveredWall = null;
+    }
     function getOpponentLabel() {
         if (game.mode === 'pve') return '电脑';
         if (game.mode === 'p2p') return '对手';
@@ -1021,6 +1027,7 @@
     function aiTurn() {
             if (game.gameOver || game.aiThinking) return;
             game.aiThinking = true;
+            clearPendingPlayerInput();
             // 显示思考状态
             statusMessage.textContent = '🤔 AI 思考中...';
             updateUI();
@@ -1089,8 +1096,9 @@
             }
             
             // 结束回合
-            endTurn();
             game.aiThinking = false;
+            clearPendingPlayerInput();
+            endTurn();
             }, 30);
         }
 
