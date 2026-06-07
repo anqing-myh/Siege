@@ -1278,7 +1278,8 @@
                     const dr = {top:-1, bottom:1, left:0, right:0}[dir];
                     const dc = {top:0, bottom:0, left:-1, right:1}[dir];
                     const oppR = pl.row + dr, oppC = pl.col + dc;
-                    if (isInBounds(oppR, oppC) && cloned.board[oppR][oppC].walls[oppDir]) continue;
+                    if (!isInBounds(oppR, oppC)) continue;
+                    if (cloned.board[oppR][oppC].walls[oppDir]) continue;
                     actions.push({ target, dir });
                 }
             }
@@ -1371,7 +1372,8 @@
                     const dr = {top:-1, bottom:1, left:0, right:0}[dir];
                     const dc = {top:0, bottom:0, left:-1, right:1}[dir];
                     const oppR = pl.row + dr, oppC = pl.col + dc;
-                    if (isInBounds(oppR, oppC) && cloned.board[oppR][oppC].walls[oppDir]) continue;
+                    if (!isInBounds(oppR, oppC)) continue;
+                    if (cloned.board[oppR][oppC].walls[oppDir]) continue;
                     actions.push({ target, dir });
                 }
             }
