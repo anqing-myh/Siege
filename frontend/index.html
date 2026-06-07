@@ -402,6 +402,10 @@
     let wsRoomCode = null;
     let wsConnected = false;
 
+    let evalCache = new Map();
+    let mandatoryCache = new Map();
+    let neighborCache = new Map();
+
     // ---- 游戏状态 ----
     let game = {
         board: [],
@@ -457,6 +461,28 @@
         if (game.mode === 'p2p') return isLocalPlayerTurn() && !game.aiThinking;
         if (game.mode === 'pvp') return true;
         return false;
+    }
+
+    function getStateKey(state, maxPlayer) {
+        let parts = [];
+
+        parts.push(maxPlayer);
+        parts.push(state.players[0].row, state.players[0].col);
+        parts.push(state.players[1].row, state.players[1].col);
+
+        for (let r = 0; r < BOARD_SIZE; r++) {
+            for (let c = 0; c < BOARD_SIZE; c++) {
+                const w = state.board[r][c].walls;
+                let mask = 0;
+                if (w.top) mask |= 1;
+                if (w.right) mask |= 2;
+                if (w.bottom) mask |= 4;
+                if (w.left) mask |= 8;
+                parts.push(mask);
+            }
+        }
+
+        return parts.join(',');
     }
 
     function getNeighbors(r, c) {
@@ -1033,6 +1059,9 @@
             updateUI();
             drawBoard();
             // 延迟极小时间让UI刷新，再执行搜索
+            evalCache.clear();
+            mandatoryCache.clear();
+            neighborCache.clear();
             setTimeout(() => {
             const bestAction = aiSearch(3);
             if (!bestAction) {
@@ -1160,7 +1189,7 @@
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
                 // 初始排序仅使用纯净的evaluateState，让深层搜索结果主导决策
-                const score = evaluateState(cloned, p);
+                const score = evaluateStateCached(cloned, p);
                 act._score = score;
             }
             actions.sort((a,b) => b._score - a._score);
@@ -1211,7 +1240,7 @@
                     }
                 } else {
                     // depth=1时，用纯净的evaluateState评估
-                    const score = evaluateState(cloned, p);
+                    const score = evaluateStateCached(cloned, p);
                     if (score > bestScore) {
                         bestScore = score;
                         bestAction = { moves: path.slice(1), wallDir: act.dir };
@@ -1237,7 +1266,7 @@
                     reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 }
                 if (cur.steps >= 3) continue;
-                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited.has(key) && !(nb.row === state.players[opp].row && nb.col === state.players[opp].col)) {
@@ -1278,7 +1307,7 @@
                 const oppR = pl.row + dr, oppC = pl.col + dc;
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-                act._score = evaluateState(cloned, maxPlayer);
+                act._score = evaluateStateCached(cloned, maxPlayer);
             }
             actions.sort((a,b) => a._score - b._score);
             let beta = Infinity;
@@ -1303,7 +1332,7 @@
                     continue;
                 }
                 if (depth <= 1) {
-                    const score = evaluateState(cloned, maxPlayer);
+                    const score = evaluateStateCached(cloned, maxPlayer);
                     if (score < bestScore) bestScore = score;
                     if (bestScore < alpha) return bestScore;
                     if (bestScore < beta) beta = bestScore;
@@ -1333,7 +1362,7 @@
                     reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 }
                 if (cur.steps >= 3) continue;
-                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited.has(key) && !(nb.row === state.players[opp].row && nb.col === state.players[opp].col)) {
@@ -1373,7 +1402,7 @@
                 const oppR = pl.row + dr, oppC = pl.col + dc;
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-                act._score = evaluateState(cloned, maxPlayer);
+                act._score = evaluateStateCached(cloned, maxPlayer);
             }
             actions.sort((a,b) => b._score - a._score);
             let alpha = -Infinity;
@@ -1398,7 +1427,7 @@
                     continue;
                 }
                 if (depth <= 1) {
-                    const score = evaluateState(cloned, maxPlayer);
+                    const score = evaluateStateCached(cloned, maxPlayer);
                     if (score > bestScore) bestScore = score;
                     if (bestScore > beta) return bestScore;
                     if (bestScore > alpha) alpha = bestScore;
@@ -1411,9 +1440,19 @@
             }
             return bestScore;
         }
+        
+        function evaluateStateCached(state, maxPlayer) {
+            const key = getStateKey(state, maxPlayer);
+            if (evalCache.has(key)) {
+                return evalCache.get(key);
+            }
+            const score = evaluateStateRaw(state, maxPlayer);
+            evalCache.set(key, score);
+            return score;
+        }
 
         // 评估状态（从maxPlayer视角）
-        function evaluateState(state, maxPlayer) {
+        function evaluateStateRaw(state, maxPlayer) {
             const [s0, s1, sep] = computeRegionsFromState(state);
             if (sep) {
                 const diff = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
@@ -1477,7 +1516,7 @@
             // 如果双方之间存在“必须经过”的关键格，并且AI当前3步内到不了，
             // 那么奖励AI向该格靠近，避免残局时错过咽喉点。
             if (!sep) {
-                const mandatoryCells = findMandatoryCellsBetweenPlayers(state, p);
+                const mandatoryCells = findMandatoryCellsBetweenPlayersCached(state, p);
 
                 if (mandatoryCells.length > 0) {
                     let bestMandatory = null;
@@ -1745,7 +1784,7 @@
                     continue;
                 }
                 if (cur.path.length >= 10) continue;
-                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited.has(key) || (nb.row === r2 && nb.col === c2)) {
@@ -1796,7 +1835,7 @@
             visited0.add(`${players[0].row},${players[0].col}`);
             while (queue0.length) {
                 const cur = queue0.shift();
-                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited0.has(key)) {
@@ -1813,7 +1852,7 @@
             visited1.add(`${players[1].row},${players[1].col}`);
             while (queue1.length) {
                 const cur = queue1.shift();
-                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
                     if (!visited1.has(key)) {
@@ -1824,6 +1863,15 @@
             }
             const size1 = visited1.size;
             return [size0, size1, true];
+        }
+        function getNeighborsFromStateCached(state, r, c) {
+            const key = getStateKey(state, 0) + `|nb|${r},${c}`;
+            if (neighborCache.has(key)) {
+                return neighborCache.get(key);
+            }
+            const result = getNeighborsFromState(state, r, c);
+            neighborCache.set(key, result);
+            return result;
         }
         function getNeighborsFromState(state, r, c) {
             const dirs = [
@@ -1857,7 +1905,7 @@
 
             while (queue.length > 0) {
                 const cur = queue.shift();
-                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                const neighbors = getNeighborsFromStateCached(state, cur.row, cur.col);
 
                 for (const nb of neighbors) {
                     const key = `${nb.row},${nb.col}`;
@@ -1882,6 +1930,20 @@
 
         function isConnectedWithoutCell(state, sr, sc, tr, tc, blockedKey) {
             return shortestDistanceFromState(state, sr, sc, tr, tc, blockedKey) !== Infinity;
+        }
+
+        function findMandatoryCellsBetweenPlayersCached(state, player) {
+            const key = getStateKey(state, player) + '|mandatory';
+
+            if (mandatoryCache.has(key)) {
+                return mandatoryCache.get(key);
+            }
+
+            const result = findMandatoryCellsBetweenPlayers(state, player);
+
+            mandatoryCache.set(key, result);
+
+            return result;
         }
 
         function findMandatoryCellsBetweenPlayers(state, player) {
