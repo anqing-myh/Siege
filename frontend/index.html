@@ -456,8 +456,8 @@
     function canOperate() {
         if (game.gameOver) return false;
         if (game.mode === 'pve') return game.currentPlayer === 0 && !game.aiThinking;
-        if (game.mode === 'p2p') return isLocalPlayerTurn() && !game.aiThinking;
         if (game.mode === 'pvp') return true;
+        if (game.mode === 'p2p') return isLocalPlayerTurn() && !game.aiThinking;
         return false;
     }
 
@@ -2268,7 +2268,11 @@
     }
 
     function isPlayerInputLocked() {
-        return game.aiThinking || game.currentPlayer === 1; // AI回合锁定玩家
+        if (game.gameOver) return true;
+        if (game.mode === 'pve') return game.aiThinking; // 只在AI回合锁定玩家
+        if (game.mode === 'pvp') return false;          // 本地双人不锁定
+        if (game.mode === 'p2p') return !isLocalPlayerTurn() || game.aiThinking; // 联机模式只允许自己的回合操作
+        return true;
     }
     // ---- 电脑端键盘事件 ----
     if (!isMobile) {
