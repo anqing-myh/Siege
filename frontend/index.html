@@ -2,8 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
     <title>围城Siege - 1v1回合制棋类博弈游戏 - 玄灵</title>
     <link rel="icon" sizes="16x16 32x32 48x48" href="favicon.ico" type="image/x-icon">
     <meta name="description" content="和好友在线联机或人机对战的回合制棋类游戏，创建房间即可对战，无需下载。">
@@ -95,8 +94,9 @@
         }
         .info-bottom-row {
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 8px;
+            gap: 16px;
         }
         .p2p-room-panel {
             display: flex;
@@ -116,7 +116,6 @@
             background: #2f2a24;
             padding: 6px 18px;
             border-radius: 30px;
-            justify-content: flex-start;
             white-space: nowrap;
             min-width: 70px;
             text-align: center;
@@ -128,15 +127,7 @@
             justify-content: center;
             overflow: hidden;
         }
-        .btn-group { display: flex; gap: 8px; justify-content: flex-end;}
-        .turn-counter,
-        .status-text-wrapper,
-        .btn-group {
-            flex: 1;
-            min-width: 0;
-            display: flex;
-            align-items: center;
-        }
+        .btn-group { display: flex; gap: 8px; }
         .info-left {
             display: flex;
             gap: 30px;
@@ -251,55 +242,64 @@
                 padding: 12px;
                 border-radius: 0;
             }
+
             .mode-select {
                 gap: 8px;
                 flex-wrap: nowrap;
             }
+
             .mode-btn {
                 padding: 8px 10px;
                 font-size: 13px;
                 white-space: nowrap;
             }
-            .info-bottom-row {
-                gap: 6px;
-            }
+
             .board-wrapper {
                 padding: 10px;
             }
+
             canvas {
                 width: min(92vw, 330px);
                 height: min(92vw, 330px);
             }
+
             .info-panel {
                 padding: 10px 12px;
                 border-radius: 22px;
             }
+
             .info-top-row {
                 flex-wrap: nowrap;
                 gap: 8px;
             }
+
             .info-left {
                 gap: 8px;
                 min-width: 0;
                 flex-wrap: nowrap;
             }
+
             .info-item {
                 gap: 4px;
                 white-space: nowrap;
                 font-size: 12px;
             }
+
             .player-badge {
                 width: 14px;
                 height: 14px;
             }
+
             .step-count {
                 font-size: 16px;
                 min-width: 18px;
             }
+
             .btn-group {
                 flex-shrink: 0;
                 gap: 4px;
             }
+
             .btn-restart {
                 padding: 6px 8px;
                 font-size: 12px;
@@ -400,7 +400,8 @@
 <script>
 (function() {
     // ========== 配置：部署后修改这里的地址 ==========
-    const SERVER_URL = 'wss://siege-server.zeabur.app'; 
+    const SERVER_URL = 'wss://siege-server.zeabur.app'; // 替换为您的Zeabur域名
+    // ===============================================
 
     const BOARD_SIZE = 7;
     const CELL_SIZE = 60;
@@ -871,11 +872,14 @@
         game.turnCount = 1;
         game.aiThinking = false;
         game.resultRecorded = false;
+
         updateUI();
         drawBoard();
+
         if (shouldSync) {
             syncGameState();
         }
+
         if (game.mode === 'pve' && game.currentPlayer === 1) {
             setTimeout(() => aiTurn(), 100);
         }
@@ -965,7 +969,9 @@
         if (!isInBounds(oppRow, oppCol)) return;
         game.board[pl.row][pl.col].walls[dir] = true;
         if (isInBounds(oppRow, oppCol)) game.board[oppRow][oppCol].walls[oppDir] = true;
+
         // 先同步，再判断游戏结束   
+
         const over = checkGameOver();
         drawBoard();
         if (over) {
@@ -1069,7 +1075,8 @@
             game.board[pl.row][pl.col].walls[dir] = true;
             if (isInBounds(oppR, oppC)) {
                 game.board[oppR][oppC].walls[oppDir] = true;
-            }     
+            }
+            
             drawBoard();
             updateUI();
             
@@ -1085,7 +1092,8 @@
                 drawBoard();
                 game.aiThinking = false;
                 return;
-            }           
+            }
+            
             // 结束回合
             endTurn();
             game.aiThinking = false;
@@ -1858,18 +1866,23 @@
             p2pStatus.style.color = '#ffcc00';
             return false;
         }
+
         const payload = { ...msg };
+
         // create 和 join 不能强制要求已有 wsRoomCode
         // 因为 create/join 成功后，服务器才会返回房间码
         const noRoomCodeNeeded = ['create', 'join'].includes(msg.type);
+
         if (!noRoomCodeNeeded) {
             if (!wsRoomCode) {
                 p2pStatus.textContent = '⚠️ 尚未加入房间';
                 p2pStatus.style.color = '#ffcc00';
                 return false;
             }
+
             payload.roomCode = wsRoomCode;
         }
+
         ws.send(JSON.stringify(payload));
         return true;
     }
