@@ -1472,6 +1472,60 @@
                     score -= 50; // 单一路径惩罚
                 }
             }
+
+            // ---------- 必经格抢占逻辑 ----------
+            // 如果双方之间存在“必须经过”的关键格，并且AI当前3步内到不了，
+            // 那么奖励AI向该格靠近，避免残局时错过咽喉点。
+            if (!sep) {
+                const mandatoryCells = findMandatoryCellsBetweenPlayers(state, p);
+
+                if (mandatoryCells.length > 0) {
+                    let bestMandatory = null;
+
+                    for (const cell of mandatoryCells) {
+                        if (!Number.isFinite(cell.distFromAI)) continue;
+
+                        // 重点处理：AI 不能在当前回合3步内到达的必经格
+                        if (cell.distFromAI > 3) {
+                            if (
+                                bestMandatory === null ||
+                                cell.distFromAI < bestMandatory.distFromAI
+                            ) {
+                                bestMandatory = cell;
+                            }
+                        }
+                    }
+
+                    if (bestMandatory) {
+                        // 越接近必经格，分数越高
+                        score += Math.max(0, 12 - bestMandatory.distFromAI) * 35;
+
+                        // 如果对手比AI更接近这个必经格，AI更应该加速抢点
+                        if (bestMandatory.distFromOpp < bestMandatory.distFromAI) {
+                            score += Math.max(
+                                0,
+                                bestMandatory.distFromAI - bestMandatory.distFromOpp
+                            ) * 25;
+                        }
+
+                        // 如果AI已经逼近到4~5步范围，给额外奖励，鼓励继续赶过去
+                        if (bestMandatory.distFromAI <= 5) {
+                            score += 80;
+                        }
+                    } else {
+                        // 如果存在必经格且AI三步内可达，鼓励直接靠近/占住
+                        const closeMandatory = mandatoryCells[0];
+
+                        if (
+                            closeMandatory &&
+                            Number.isFinite(closeMandatory.distFromAI) &&
+                            closeMandatory.distFromAI <= 3
+                        ) {
+                            score += (4 - closeMandatory.distFromAI) * 60;
+                        }
+                    }
+                }
+            }
             
             // 死路惩罚：如果当前位置只有1个或0个可移动方向，强烈惩罚
             if (mobility <= 1) {
@@ -1790,7 +1844,112 @@
             }
             return result;
         }
+        function shortestDistanceFromState(state, sr, sc, tr, tc, blockedKey = null) {
+            if (sr === tr && sc === tc) return 0;
 
+            const startKey = `${sr},${sc}`;
+            const targetKey = `${tr},${tc}`;
+
+            if (blockedKey === startKey || blockedKey === targetKey) return Infinity;
+
+            const queue = [{ row: sr, col: sc, dist: 0 }];
+            const visited = new Set([startKey]);
+
+            while (queue.length > 0) {
+                const cur = queue.shift();
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+
+                for (const nb of neighbors) {
+                    const key = `${nb.row},${nb.col}`;
+                    if (key === blockedKey) continue;
+                    if (visited.has(key)) continue;
+
+                    if (nb.row === tr && nb.col === tc) {
+                        return cur.dist + 1;
+                    }
+
+                    visited.add(key);
+                    queue.push({
+                        row: nb.row,
+                        col: nb.col,
+                        dist: cur.dist + 1
+                    });
+                }
+            }
+
+            return Infinity;
+        }
+
+        function isConnectedWithoutCell(state, sr, sc, tr, tc, blockedKey) {
+            return shortestDistanceFromState(state, sr, sc, tr, tc, blockedKey) !== Infinity;
+        }
+
+        function findMandatoryCellsBetweenPlayers(state, player) {
+            const p = player;
+            const opp = 1 - p;
+
+            const pl = state.players[p];
+            const oppPl = state.players[opp];
+
+            const baseDist = shortestDistanceFromState(
+                state,
+                pl.row,
+                pl.col,
+                oppPl.row,
+                oppPl.col
+            );
+
+            if (baseDist === Infinity) return [];
+
+            const result = [];
+
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    // 不能把双方棋子本身当作必经格
+                    if (r === pl.row && c === pl.col) continue;
+                    if (r === oppPl.row && c === oppPl.col) continue;
+
+                    const blockedKey = `${r},${c}`;
+
+                    const stillConnected = isConnectedWithoutCell(
+                        state,
+                        pl.row,
+                        pl.col,
+                        oppPl.row,
+                        oppPl.col,
+                        blockedKey
+                    );
+
+                    if (!stillConnected) {
+                        const distFromAI = shortestDistanceFromState(
+                            state,
+                            pl.row,
+                            pl.col,
+                            r,
+                            c
+                        );
+
+                        const distFromOpp = shortestDistanceFromState(
+                            state,
+                            oppPl.row,
+                            oppPl.col,
+                            r,
+                            c
+                        );
+
+                        result.push({
+                            row: r,
+                            col: c,
+                            distFromAI,
+                            distFromOpp
+                        });
+                    }
+                }
+            }
+
+            result.sort((a, b) => a.distFromAI - b.distFromAI);
+            return result;
+        }
         // 寻找从start到target的最短路径（步数≤3），返回包含起点和终点的路径数组，若无则null
         // 评估一条路径是否有死路风险（路径中经过的格子是否让AI难以回头）
         function pathHasDeadEndRisk(path, state, player) {
