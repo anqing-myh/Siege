@@ -1,0 +1,34 @@
+name: Update Version JSON
+
+on:
+  push:
+    branches: [ main ] # 每次 push 到 main 分支触发
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Get latest commit
+        id: commit
+        run: |
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          COMMIT_DATE=$(git log -1 --pretty=%ad --date=short)
+          echo "sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "msg=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "date=$COMMIT_DATE" >> $GITHUB_OUTPUT
+
+      - name: Update version.json
+        run: |
+          echo "{
+            \"version\": \"${{ steps.commit.outputs.sha }}\",
+            \"message\": \"${{ steps.commit.outputs.msg }}\",
+            \"date\": \"${{ steps.commit.outputs.date }}\"
+          }" > version.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version.json
+          git commit -m "Update version.json to ${{ steps.commit.outputs.sha }}"
+          git push

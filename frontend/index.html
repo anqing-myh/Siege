@@ -2526,33 +2526,19 @@
         overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
     }
 
-    async function fetchLatestCommit(owner, repo, branch = 'main') {
-        const url = `https://api.github.com/repos/${owner}/${repo}/commits?sha=${branch}&per_page=1`;
+    async function updateVersionInfo() {
         try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('无法获取 commit 信息');
-            const data = await response.json();
-            if (data.length === 0) return null;
-            return {
-                message: data[0].commit.message,
-                date: data[0].commit.author.date,
-                sha: data[0].sha
-            };
+            const res = await fetch('../version.json'); // 注意路径，根据 frontend 位置调整
+            if (!res.ok) throw new Error('无法获取 version.json');
+            const data = await res.json();
+            const el = document.getElementById('versionInfo');
+            el.textContent = `版本: ${data.version} - ${data.message} (${data.date})`;
         } catch (err) {
             console.error(err);
-            return null;
+            document.getElementById('versionInfo').textContent = '版本信息获取失败';
         }
     }
-    async function updateVersionInfo() {
-        const commit = await fetchLatestCommit('anqing-myh', 'Siege');
-        const el = document.getElementById('versionInfo');
-        if (commit) {
-            el.textContent = `最新版本: ${commit.sha.slice(0,7)} - ${commit.message} (${new Date(commit.date).toLocaleDateString()})`;
-        } else {
-            el.textContent = '版本信息获取失败';
-        }
-    }
-    // 页面加载时执行
+
     updateVersionInfo();
 
     // ---- 启动 ----
