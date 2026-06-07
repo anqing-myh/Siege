@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
     <title>围城Siege - 1v1回合制棋类博弈游戏 - 玄灵</title>
     <link rel="icon" sizes="16x16 32x32 48x48" href="favicon.ico" type="image/x-icon">
     <meta name="description" content="和好友在线联机或人机对战的回合制棋类游戏，创建房间即可对战，无需下载。">
@@ -17,6 +17,7 @@
             margin: 0;
             font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
             color: #eee;
+            overflow-x: hidden;
         }
         .game-container {
             background: #3e3e3e;
@@ -124,6 +125,7 @@
             flex: 1;
             display: flex;
             justify-content: center;
+            overflow: hidden;
         }
         .btn-group { display: flex; gap: 8px; }
         .info-left {
@@ -158,6 +160,8 @@
             padding: 6px 18px;
             border-radius: 30px;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .btn-restart {
             background: #7a6a54;
@@ -228,9 +232,95 @@
             text-align: left;
         }
         @media (max-width: 500px) {
-            .game-container { padding: 16px; }
-            canvas { width: 300px; height: 300px; }
-            .info-panel { flex-wrap: wrap; }
+            body {
+                align-items: flex-start;
+                padding-top: 10px;
+            }
+
+            .game-container {
+                width: 100vw;
+                padding: 12px;
+                border-radius: 0;
+            }
+
+            .mode-select {
+                gap: 8px;
+                flex-wrap: nowrap;
+            }
+
+            .mode-btn {
+                padding: 8px 10px;
+                font-size: 13px;
+                white-space: nowrap;
+            }
+
+            .board-wrapper {
+                padding: 10px;
+            }
+
+            canvas {
+                width: min(92vw, 330px);
+                height: min(92vw, 330px);
+            }
+
+            .info-panel {
+                padding: 10px 12px;
+                border-radius: 22px;
+            }
+
+            .info-top-row {
+                flex-wrap: nowrap;
+                gap: 8px;
+            }
+
+            .info-left {
+                gap: 8px;
+                min-width: 0;
+                flex-wrap: nowrap;
+            }
+
+            .info-item {
+                gap: 4px;
+                white-space: nowrap;
+                font-size: 12px;
+            }
+
+            .player-badge {
+                width: 14px;
+                height: 14px;
+            }
+
+            .step-count {
+                font-size: 16px;
+                min-width: 18px;
+            }
+
+            .btn-group {
+                flex-shrink: 0;
+                gap: 4px;
+            }
+
+            .btn-restart {
+                padding: 6px 8px;
+                font-size: 12px;
+                white-space: nowrap;
+            }
+
+            .turn-counter {
+                font-size: 12px;
+                padding: 5px 10px;
+                min-width: 56px;
+            }
+
+            .status-text {
+                font-size: 12px;
+                padding: 5px 8px;
+            }
+
+            .footer {
+                font-size: 11px;
+                text-align: center;
+            }
         }
     </style>
 </head>
