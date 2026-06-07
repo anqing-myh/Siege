@@ -190,6 +190,10 @@
             color: #888;
             text-align: center;
         }
+        #roomCodeInput {
+            user-select: text;
+            -webkit-user-select: text;
+        }
         #bottomBar {
             margin-top: 16px;
             display: flex;
@@ -2274,10 +2278,23 @@
         if (game.mode === 'p2p') return !isLocalPlayerTurn() || game.aiThinking; // 联机模式只允许自己的回合操作
         return true;
     }
+    function isTypingInRoomCodeInput(e) {
+        return e.target && e.target.id === 'roomCodeInput';
+    }
+    roomCodeInput.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+    });
+    roomCodeInput.addEventListener('input', () => {
+        roomCodeInput.value = roomCodeInput.value.toUpperCase();
+    });
     // ---- 电脑端键盘事件 ----
     if (!isMobile) {
         document.addEventListener('keydown', (e) => {
-            if (isPlayerInputLocked()) { e.preventDefault(); return; }
+            if (isTypingInRoomCodeInput(e)) return;
+            if (isPlayerInputLocked()) {
+                e.preventDefault();
+                return;
+            }
             const key = e.key;
             if (!canOperate()) return;
             if (key === 'w' || key === 'W' || key === 'ArrowUp') {
