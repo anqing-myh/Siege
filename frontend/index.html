@@ -515,7 +515,7 @@
         visited.add(`${r},${c}`);
         while (queue.length > 0) {
             const cur = queue.shift();
-            if (cur.steps > 0) result.push({ row: cur.row, col: cur.col });
+            result.push({ row: cur.row, col: cur.col });
             if (cur.steps >= maxSteps) continue;
             const neighbors = getNeighbors(cur.row, cur.col);
             for (const nb of neighbors) {
@@ -1134,9 +1134,7 @@
             visited.add(`${start.row},${start.col}`);
             while (queue.length > 0) {
                 const cur = queue.shift();
-                if (cur.steps > 0) {
-                    reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
-                }
+                reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 if (cur.steps >= 3) continue;
                 const neighbors = getNeighbors(cur.row, cur.col);
                 for (const nb of neighbors) {
@@ -1181,7 +1179,9 @@
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
                 // 初始排序仅使用纯净的evaluateState，让深层搜索结果主导决策
-                const score = evaluateStateCached(cloned, p);
+                const score =
+                    evaluateStateCached(cloned, p) +
+                    evaluateLateGameActionScore(game, cloned, p, act.dir);
                 act._score = score;
             }
             actions.sort((a,b) => b._score - a._score);
@@ -1225,14 +1225,18 @@
                 }
                 // 深度>2时，完全信赖深层搜索结果
                 if (depth > 2) {
-                    const oppScore = oppSearch(cloned, depth - 1, p, bestScore);
+                    const oppScore =
+                        oppSearch(cloned, depth - 1, p, bestScore) +
+                        evaluateLateGameActionScore(game, cloned, p, act.dir);
                     if (oppScore > bestScore) {
                         bestScore = oppScore;
                         bestAction = { moves: path.slice(1), wallDir: act.dir };
                     }
                 } else {
                     // depth=1时，用纯净的evaluateState评估
-                    const score = evaluateStateCached(cloned, p);
+                    const score =
+                        evaluateStateCached(cloned, p) +
+                        evaluateLateGameActionScore(game, cloned, p, act.dir);
                     if (score > bestScore) {
                         bestScore = score;
                         bestAction = { moves: path.slice(1), wallDir: act.dir };
@@ -1254,9 +1258,7 @@
             visited.add(`${start.row},${start.col}`);
             while (queue.length > 0) {
                 const cur = queue.shift();
-                if (cur.steps > 0) {
-                    reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
-                }
+                reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 if (cur.steps >= 3) continue;
                 const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
@@ -1282,7 +1284,8 @@
                     const dr = {top:-1, bottom:1, left:0, right:0}[dir];
                     const dc = {top:0, bottom:0, left:-1, right:1}[dir];
                     const oppR = pl.row + dr, oppC = pl.col + dc;
-                    if (isInBounds(oppR, oppC) && cloned.board[oppR][oppC].walls[oppDir]) continue;
+                    if (!isInBounds(oppR, oppC)) continue;
+                    if (cloned.board[oppR][oppC].walls[oppDir]) continue;
                     actions.push({ target, dir });
                 }
             }
@@ -1299,7 +1302,9 @@
                 const oppR = pl.row + dr, oppC = pl.col + dc;
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-                act._score = evaluateStateCached(cloned, maxPlayer);
+                act._score =
+                    evaluateStateCached(cloned, maxPlayer) +
+                    evaluateLateGameActionScore(state, cloned, maxPlayer, act.dir);
             }
             actions.sort((a,b) => a._score - b._score);
             let beta = Infinity;
@@ -1324,13 +1329,17 @@
                     continue;
                 }
                 if (depth <= 1) {
-                    const score = evaluateStateCached(cloned, maxPlayer);
+                    const score =
+                        evaluateStateCached(cloned, maxPlayer) +
+                        evaluateLateGameActionScore(state, cloned, maxPlayer, act.dir);
                     if (score < bestScore) bestScore = score;
                     if (bestScore < alpha) return bestScore;
                     if (bestScore < beta) beta = bestScore;
                 } else {
                     // 递归下一层（最大化）
-                    const nextScore = maxSearch(cloned, depth - 1, maxPlayer, bestScore);
+                    const nextScore =
+                        oppSearch(cloned, depth - 1, maxPlayer, bestScore) +
+                        evaluateLateGameActionScore(state, cloned, maxPlayer, act.dir);
                     if (nextScore < bestScore) bestScore = nextScore;
                     if (bestScore < alpha) return bestScore;
                     if (bestScore < beta) beta = bestScore;
@@ -1350,9 +1359,7 @@
             visited.add(`${start.row},${start.col}`);
             while (queue.length > 0) {
                 const cur = queue.shift();
-                if (cur.steps > 0) {
-                    reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
-                }
+                reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 if (cur.steps >= 3) continue;
                 const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
@@ -1377,7 +1384,8 @@
                     const dr = {top:-1, bottom:1, left:0, right:0}[dir];
                     const dc = {top:0, bottom:0, left:-1, right:1}[dir];
                     const oppR = pl.row + dr, oppC = pl.col + dc;
-                    if (isInBounds(oppR, oppC) && cloned.board[oppR][oppC].walls[oppDir]) continue;
+                    if (!isInBounds(oppR, oppC)) continue;
+                    if (cloned.board[oppR][oppC].walls[oppDir]) continue;
                     actions.push({ target, dir });
                 }
             }
@@ -1672,7 +1680,7 @@
                 oppVisited.add(`${oppPl.row},${oppPl.col}`);
                 while (oppQueue.length > 0) {
                     const cur = oppQueue.shift();
-                    if (cur.steps > 0) oppReachable.push(cur);
+                    oppReachable.push(cur);
                     if (cur.steps >= 3) continue;
                     const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                     for (const nb of neighbors) {
@@ -1795,7 +1803,105 @@
             }
             return bottleneckCount + 1;
         }
+        function evaluateLateGameActionScore(beforeState, afterState, maxPlayer, actionDir) {
+            if (game.turnCount <= 8) return 0;
+            const p = maxPlayer;
+            const opp = 1 - p;
+            const beforeAI = beforeState.players[p];
+            const beforeOpp = beforeState.players[opp];
+            const afterAI = afterState.players[p];
+            const afterOpp = afterState.players[opp];
+            let score = 0;
+            // 1. 避免自己被封锁在墙体较密的地区
+            const localWallDensity = countLocalWallDensity(afterState, afterAI.row, afterAI.col, 2);
+            score -= localWallDensity * 18;
+            const reachableArea = countReachableAreaFromState(afterState, afterAI.row, afterAI.col);
+            if (reachableArea <= 8) {
+                score -= 220;
+            } else if (reachableArea <= 12) {
+                score -= 120;
+            } else if (reachableArea <= 18) {
+                score -= 50;
+            }
+            const mobility = countMobility(afterState, p);
+            if (mobility <= 1) {
+                score -= 100;
+            }
+            // 2. AI 处于棋盘次外圈时，惩罚向棋盘中心方向放墙
+            if (isSecondOuterRing(afterAI.row, afterAI.col)) {
+                if (wallDirPointsToCenter(afterAI.row, afterAI.col, actionDir)) {
+                    score -= 90;
+                }
+            }
+            // 3. 奖励缩小 AI 抵达玩家棋子所需步数
+            const oldDist = shortestDistanceFromState(
+                beforeState,
+                beforeAI.row,
+                beforeAI.col,
+                beforeOpp.row,
+                beforeOpp.col
+            );
+            const newDist = shortestDistanceFromState(
+                afterState,
+                afterAI.row,
+                afterAI.col,
+                afterOpp.row,
+                afterOpp.col
+            );
+            if (Number.isFinite(oldDist) && Number.isFinite(newDist)) {
+                score += (oldDist - newDist) * 40;
+            }
+            return score;
+        }
+        function countLocalWallDensity(state, r, c, radius = 2) {
+            let count = 0;
 
+            for (let rr = Math.max(0, r - radius); rr <= Math.min(BOARD_SIZE - 1, r + radius); rr++) {
+                for (let cc = Math.max(0, c - radius); cc <= Math.min(BOARD_SIZE - 1, c + radius); cc++) {
+                    for (const dir of ['top', 'right', 'bottom', 'left']) {
+                        if (state.board[rr][cc].walls[dir]) count++;
+                    }
+                }
+            }
+
+            return count;
+        }
+
+        function countReachableAreaFromState(state, sr, sc) {
+            const visited = new Set();
+            const queue = [{ row: sr, col: sc }];
+            visited.add(`${sr},${sc}`);
+
+            while (queue.length > 0) {
+                const cur = queue.shift();
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+
+                for (const nb of neighbors) {
+                    const key = `${nb.row},${nb.col}`;
+                    if (!visited.has(key)) {
+                        visited.add(key);
+                        queue.push(nb);
+                    }
+                }
+            }
+
+            return visited.size;
+        }
+
+        function isSecondOuterRing(r, c) {
+            return r === 1 || c === 1 || r === BOARD_SIZE - 2 || c === BOARD_SIZE - 2;
+        }
+
+        function wallDirPointsToCenter(r, c, dir) {
+            const center = (BOARD_SIZE - 1) / 2;
+
+            if (r === 1 && dir === 'bottom') return true;
+            if (r === BOARD_SIZE - 2 && dir === 'top') return true;
+            if (c === 1 && dir === 'right') return true;
+            if (c === BOARD_SIZE - 2 && dir === 'left') return true;
+
+            return false;
+        }
         function countMobility(state, player) {            const pl = state.players[player];
             let count = 0;
             const dirs = [{dr:-1,dc:0},{dr:1,dc:0},{dr:0,dc:-1},{dr:0,dc:1}];
