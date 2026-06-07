@@ -1027,7 +1027,7 @@
             drawBoard();
             // 延迟极小时间让UI刷新，再执行搜索
             setTimeout(() => {
-            const bestAction = aiSearch(4);
+            const bestAction = aiSearch(3);
             if (!bestAction) {
                 game.aiThinking = false;
                 endTurn();
@@ -1089,8 +1089,8 @@
             }
             
             // 结束回合
-            game.aiThinking = false;
             endTurn();
+            game.aiThinking = false;
             }, 30);
         }
 
@@ -1156,8 +1156,6 @@
                 act._score = score;
             }
             actions.sort((a,b) => b._score - a._score);
-            const ACTION_LIMIT = depth >= 3 ? 10 : 16;
-            actions.splice(ACTION_LIMIT);
 
             for (const act of actions) {
                 const cloned = cloneGameState();
@@ -1275,8 +1273,6 @@
                 act._score = evaluateState(cloned, maxPlayer);
             }
             actions.sort((a,b) => a._score - b._score);
-            const ACTION_LIMIT = depth >= 3 ? 10 : 16;
-            actions.splice(ACTION_LIMIT);
             let beta = Infinity;
             for (const act of actions) {
                 const cloned = cloneState(state);
@@ -1372,8 +1368,6 @@
                 act._score = evaluateState(cloned, maxPlayer);
             }
             actions.sort((a,b) => b._score - a._score);
-            const ACTION_LIMIT = depth >= 3 ? 10 : 16;
-            actions.splice(ACTION_LIMIT);
             let alpha = -Infinity;
             for (const act of actions) {
                 const cloned = cloneState(state);
@@ -1413,153 +1407,234 @@
         // 评估状态（从maxPlayer视角）
         function evaluateState(state, maxPlayer) {
             const [s0, s1, sep] = computeRegionsFromState(state);
-
+            if (sep) {
+                const diff = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
+                return diff * 1000; // 放大权重
+            }
             const p = maxPlayer;
             const opp = 1 - p;
             const pl = state.players[p];
             const oppPl = state.players[opp];
-
-            const mySize = p === 0 ? s0 : s1;
-            const oppSize = p === 0 ? s1 : s0;
-
-            if (sep) {
-                const diff = mySize - oppSize;
-                return diff * 10000;
-            }
-
-            let score = 0;
-
-            const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+            const mySize = (maxPlayer === 0) ? s0 : s1;
+            const oppSize = (maxPlayer === 0) ? s1 : s0;
+            // 基础分：区域差
+            let score = (mySize - oppSize) * 50;
+            // 强烈鼓励占据中心位置（3,3是7x7棋盘中心）
             const centerR = 3, centerC = 3;
             const distToCenter = Math.abs(pl.row - centerR) + Math.abs(pl.col - centerC);
-
-            const myMob = countMobility(state, p);
-            const oppMob = countMobility(state, opp);
-
-            // 1. 基础区域优势
-            score += (mySize - oppSize) * 65;
-
-            // 2. 中心与活动性
-            score -= distToCenter * 10;
-            score += myMob * 28;
-            score -= oppMob * 32;
-
-            if (myMob <= 1) score -= (3 - myMob) * 90;
-            if (oppMob <= 1) score += (3 - oppMob) * 120;
-
-            // 3. 边角风险
+            score -= distToCenter * 12;
+            // 强烈鼓励占据开放位置（邻边封闭墙少）
+            let wallCount = 0;
+            for (const dir of ['top','right','bottom','left']) {
+                if (state.board[pl.row][pl.col].walls[dir]) wallCount++;
+            }
+            score -= wallCount * 20;
+            // 计算可移动性（周围可通行的方向数，排除对方棋子）
+            let mobility = 0;
+            const dirs = [{dr:-1,dc:0},{dr:1,dc:0},{dr:0,dc:-1},{dr:0,dc:1}];
+            for (const d of dirs) {
+                const nr = pl.row + d.dr, nc = pl.col + d.dc;
+                if (!isInBounds(nr, nc)) continue;
+                const side = { '-1,0':'top','1,0':'bottom','0,-1':'left','0,1':'right' }[`${d.dr},${d.dc}`];
+                if (state.board[pl.row][pl.col].walls[side]) continue;
+                const oppSide = {top:'bottom',bottom:'top',left:'right',right:'left'}[side];
+                if (state.board[nr][nc].walls[oppSide]) continue;
+                if (nr === oppPl.row && nc === oppPl.col) continue;
+                mobility++;
+            }
+            score += mobility * 20;  // 保持移动能力
+            
+            // 走廊方向计数：统计AI有多少个方向可以接近对手
+            const corridors = countApproachCorridors(state, pl.row, pl.col, oppPl.row, oppPl.col);
+            // 多走廊奖励：鼓励维持2个以上方向接近对手，增加局势复杂度
+            if (corridors >= 2) {
+                score += corridors * 25;
+            } else if (corridors === 1) {
+                // 只有1条走廊是高风险（容易被封锁），强烈惩罚
+                score -= 40;
+            }
+            
+            // 瓶颈分析：计算两区域之间的瓶颈数量
+            // 如果瓶颈多，说明有多个路径连通，AI不容易被封锁
+            if (!sep) {
+                const bottlenecks = countPathBottlenecks(state, pl.row, pl.col, oppPl.row, oppPl.col);
+                if (bottlenecks >= 3) {
+                    score += bottlenecks * 15; // 多路径奖励
+                } else if (bottlenecks <= 1) {
+                    score -= 50; // 单一路径惩罚
+                }
+            }
+            
+            // 死路惩罚：如果当前位置只有1个或0个可移动方向，强烈惩罚
+            if (mobility <= 1) {
+                score -= (3 - mobility) * 60;
+            }            
+            // 惩罚不必要的靠近边缘行为：计算到棋盘中心的距离和到边缘的距离
+            // 如果AI更靠近边缘而不是中心，且还有开阔区域可去，则惩罚
             const edgeDistR = Math.min(pl.row, BOARD_SIZE - 1 - pl.row);
             const edgeDistC = Math.min(pl.col, BOARD_SIZE - 1 - pl.col);
             const minEdgeDist = Math.min(edgeDistR, edgeDistC);
-
-            if (minEdgeDist === 0 && myMob >= 2) score -= 45;
-            else if (minEdgeDist === 1 && myMob >= 2) score -= 20;
-
-            if (
-                (pl.row === 0 || pl.row === BOARD_SIZE - 1) &&
-                (pl.col === 0 || pl.col === BOARD_SIZE - 1)
-            ) {
-                score -= 90;
+            // 如果靠近边缘（距离边缘≤1）且还有较好的移动方向（可移动方向≥2，说明有开阔区域可去）
+            if (minEdgeDist <= 1 && mobility >= 2) {
+                score -= (3 - minEdgeDist) * 20;  // 越靠近边缘惩罚越大
+                // 如果同时远离中心，额外惩罚
+                if (distToCenter >= 3) {
+                    score -= 15;
+                }
             }
-
-            // 4. 接近对手，但避免无意义贴脸
-            if (distToOpp >= 4) {
-                score += Math.max(0, 8 - distToOpp) * 12;
-            } else if (distToOpp === 3) {
-                score += 35;
-            } else if (distToOpp === 2) {
-                score += 45;
-            } else if (distToOpp === 1) {
-                score += 20;
+            // 但如果是被对手逼到边缘或者活动空间小，不惩罚（已在死路惩罚中处理）
+            
+            // 朝向对手方向的奖励
+            const distManhattan = Math.abs(oppPl.row - pl.row) + Math.abs(oppPl.col - pl.col);
+            if (distManhattan > 1 && distManhattan <= 4) {
+                // 适中的距离，保持一定接近但不要贴脸
+                const approachBonus = (5 - distManhattan) * 5;
+                score += approachBonus;
+            } else if (distManhattan > 4 && distManhattan <= 6) {
+                // 较远时鼓励接近
+                score += (7 - distManhattan) * 3;
             }
-
-            // 5. 走廊与瓶颈
-            const corridors = countApproachCorridors(state, pl.row, pl.col, oppPl.row, oppPl.col);
-
-            if (corridors >= 2) score += corridors * 24;
-            else if (corridors === 1) score -= 35;
-            else score -= 70;
-
-            const bottlenecks = countPathBottlenecks(state, pl.row, pl.col, oppPl.row, oppPl.col);
-
-            if (bottlenecks >= 3) score += bottlenecks * 18;
-            else if (bottlenecks === 2) score += 20;
-            else if (bottlenecks <= 1) score -= 55;
-
-            // 6. 对手活动空间：越小越好
-            const oppReach3 = countReachableFromState(state, oppPl.row, oppPl.col, 3, p, 18);
-            const myReach3 = countReachableFromState(state, pl.row, pl.col, 3, opp, 18);
-
-            score += (myReach3 - oppReach3) * 10;
-
-            if (oppReach3 <= 8) {
-                score += (9 - oppReach3) * 38;
-                score += Math.max(0, 6 - distToOpp) * 28;
+            
+            // 与对手保持适当距离（降低贴脸惩罚，鼓励近身对抗）
+            const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+            if (distToOpp < 2) {
+                score -= (3 - distToOpp) * 5;  // 大幅降低惩罚，鼓励近身
             }
-
-            if (myReach3 <= 6) {
-                score -= (7 - myReach3) * 45;
+            // 近身时积极封锁对手移动力（大幅提升权重，鼓励主动对抗）
+            if (distToOpp <= 3 && distToOpp > 0) {
+                const oppMob = countMobility(state, opp);
+                score -= oppMob * 35;  // 每减少对手一个可移动方向，大幅奖励（从25→35）
+                // 如果对手只剩1个或0个可移动方向，说明快被封死了，大奖励
+                if (oppMob <= 1) {
+                    score += 300;  // 从200→300
+                }
+                // 距离越近奖励越大，鼓励主动碰撞
+                if (distToOpp === 1) {
+                    score += 50;  // 贴脸额外奖励
+                }
             }
-
-            // 7. 对手小区域追杀
-            const oppFullArea = countReachableFromState(state, oppPl.row, oppPl.col, 99, p, 20);
-
-            if (oppFullArea <= 12) {
-                score += (13 - oppFullArea) * 45;
-                score += Math.max(0, 6 - distToOpp) * 35;
+            // 远距离时也鼓励靠近对手
+            if (distToOpp > 3) {
+                score += Math.max(0, 7 - distToOpp) * 8;  // 从远处开始就鼓励靠近
             }
-
-            // 8. 模拟当前格四个方向放墙的收益
-            let bestWallGain = -Infinity;
-            let winningWallBonus = 0;
-
-            for (const dir of ['top', 'right', 'bottom', 'left']) {
-                const wallResult = simulateWallGain(state, p, dir);
-                if (!wallResult.valid) continue;
-
-                bestWallGain = Math.max(bestWallGain, wallResult.gain);
-
-                if (wallResult.separated) {
-                    if (wallResult.diff > 0) {
-                        winningWallBonus = Math.max(winningWallBonus, 800 + wallResult.diff * 120);
-                    } else {
-                        winningWallBonus = Math.max(winningWallBonus, -900 + wallResult.diff * 120);
+            
+            // 评估自己的墙是否形成了对对手的包围趋势
+            // 检查AI棋子周围的墙是否面向对手方向
+            const myWalls = ['top','right','bottom','left'].filter(d => state.board[pl.row][pl.col].walls[d]);
+            // 如果AI放的墙堵住了对手可能的移动方向（墙在AI和对手之间），额外奖励
+            const dirToOppR = oppPl.row - pl.row;
+            const dirToOppC = oppPl.col - pl.col;
+            const primaryDirR = dirToOppR > 0 ? 'bottom' : dirToOppR < 0 ? 'top' : null;
+            const primaryDirC = dirToOppC > 0 ? 'right' : dirToOppC < 0 ? 'left' : null;
+            for (const w of myWalls) {
+                if (w === primaryDirR || w === primaryDirC) {
+                    score += 40; // 面向对手的墙有额外奖励
+                }
+            }
+            
+            // 积极追求胜利：如果AI有机会快速分隔对手，给予巨大奖励
+            // 模拟在当前位置放一堵关键的墙是否会导致分隔
+            if (distToOpp <= 2) {
+                // 检查是否有某个方向放墙后能导致对手区域缩小
+                for (const dir of ['top','right','bottom','left']) {
+                    if (state.board[pl.row][pl.col].walls[dir]) continue;
+                    const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
+                    const dr = {top:-1, bottom:1, left:0, right:0}[dir];
+                    const dc = {top:0, bottom:0, left:-1, right:1}[dir];
+                    const nr = pl.row + dr, nc = pl.col + dc;
+                    if (!isInBounds(nr, nc)) continue;
+                    if (state.board[nr][nc].walls[oppDir]) continue;
+                    // 模拟放墙
+                    const sim = cloneState(state);
+                    sim.board[pl.row][pl.col].walls[dir] = true;
+                    if (isInBounds(nr, nc)) sim.board[nr][nc].walls[oppDir] = true;
+                    const [ss0, ss1, ssep] = computeRegionsFromState(sim);
+                    if (ssep) {
+                        const simScore = (p === 0) ? (ss0 - ss1) : (ss1 - ss0);
+                        if (simScore > 0) {
+                            score += 300; // 能直接赢的大奖励
+                        }
                     }
                 }
             }
-
-            if (bestWallGain !== -Infinity) {
-                score += bestWallGain * 18;
-            }
-
-            score += winningWallBonus;
-
-            // 9. 墙朝向对手奖励
-            const dirToOppR = oppPl.row - pl.row;
-            const dirToOppC = oppPl.col - pl.col;
-
-            const primaryDirR = dirToOppR > 0 ? 'bottom' : dirToOppR < 0 ? 'top' : null;
-            const primaryDirC = dirToOppC > 0 ? 'right' : dirToOppC < 0 ? 'left' : null;
-
-            for (const dir of ['top', 'right', 'bottom', 'left']) {
-                if (!state.board[pl.row][pl.col].walls[dir]) continue;
-                if (dir === primaryDirR || dir === primaryDirC) {
-                    score += 36;
+            
+            // 劣势时避免快速终结，但也要积极反扑
+            if (mySize < oppSize) {
+                score -= (oppSize - mySize) * 30;
+                // 劣势时如果靠近对手，有翻盘机会，额外奖励
+                if (distToOpp <= 3) {
+                    score += (4 - distToOpp) * 30;
+                }
+            } else if (mySize > oppSize) {
+                // 优势时巩固优势，靠近对手加速终结
+                score += (mySize - oppSize) * 20;
+                if (distToOpp <= 3) {
+                    score += (4 - distToOpp) * 25;
                 }
             }
-
-            // 10. 优劣势策略
-            if (mySize > oppSize) {
-                score += (mySize - oppSize) * 22;
-                if (distToOpp <= 3) score += (4 - distToOpp) * 35;
-            } else if (mySize < oppSize) {
-                score -= (oppSize - mySize) * 35;
-                if (distToOpp <= 3 && oppMob <= 2) {
-                    score += (4 - distToOpp) * 45;
+            
+            // ---------- 快速追击逻辑 ----------
+            // 评估对手是否容易被封锁，若是则AI应极速赶往封死对手
+            if (distToOpp <= 6) {
+                // 计算对手在3步内能到达的格子数（活动空间）
+                const oppReachable = [];
+                const oppVisited = new Set();
+                const oppQueue = [{ row: oppPl.row, col: oppPl.col, steps: 0 }];
+                oppVisited.add(`${oppPl.row},${oppPl.col}`);
+                while (oppQueue.length > 0) {
+                    const cur = oppQueue.shift();
+                    if (cur.steps > 0) oppReachable.push(cur);
+                    if (cur.steps >= 3) continue;
+                    const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                    for (const nb of neighbors) {
+                        const key = `${nb.row},${nb.col}`;
+                        if (!oppVisited.has(key) && !(nb.row === pl.row && nb.col === pl.col)) {
+                            oppVisited.add(key);
+                            oppQueue.push({ row: nb.row, col: nb.col, steps: cur.steps + 1 });
+                        }
+                    }
                 }
-            }
-
-            return score;
+                const oppReachCount = oppReachable.length;
+                
+                // 对手活动空间小（≤8格），说明容易被封锁，AI应火速赶往
+                if (oppReachCount <= 8) {
+                    // 活动空间越小，奖励越大
+                    score += (12 - oppReachCount) * 25;
+                    // 越靠近对手越好
+                    score += Math.max(0, 6 - distToOpp) * 35;
+                    // 如果AI自己的移动方向朝向对手，额外奖励
+                    const dirToOpp = {dr: oppPl.row - pl.row, dc: oppPl.col - pl.col};
+                    // 检查AI是否有朝向对手方向移动的路径（简化：用走廊方向）
+                    const corridors = countApproachCorridors(state, pl.row, pl.col, oppPl.row, oppPl.col);
+                    if (corridors >= 1) {
+                        score += corridors * 30;
+                    }
+                }
+                
+                // 判断对手3步内是否无法到达大片区域（例如被墙围困在角落）
+                // 计算对手如果BFS到底（不限步数），能到多少格子
+                const oppFullArea = [];
+                const oppFullVisited = new Set();
+                const oppFullQueue = [{ row: oppPl.row, col: oppPl.col }];
+                oppFullVisited.add(`${oppPl.row},${oppPl.col}`);
+                while (oppFullQueue.length > 0) {
+                    const cur = oppFullQueue.shift();
+                    oppFullArea.push(cur);
+                    const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+                    for (const nb of neighbors) {
+                        const key = `${nb.row},${nb.col}`;
+                        if (!oppFullVisited.has(key)) {
+                            oppFullVisited.add(key);
+                            oppFullQueue.push(nb);
+                        }
+                    }
+                }
+                // 如果对手被困在很小的区域（总面积≤12），AI应立刻赶往彻底封锁
+                if (oppFullArea.length <= 12) {
+                    score += (15 - oppFullArea.length) * 30;
+                    score += Math.max(0, 5 - distToOpp) * 40;
+                }
+            }            return score;
         }
 
         // ---------- 克隆游戏状态 ----------
@@ -1650,130 +1725,6 @@
         }
 
         // 基于克隆的辅助函数
-        function countReachableFromState(state, r, c, maxSteps, blockedPlayer = null, cap = Infinity) {
-            const visited = new Set();
-            const queue = [{ row: r, col: c, steps: 0 }];
-            visited.add(`${r},${c}`);
-
-            let count = 0;
-
-            while (queue.length > 0) {
-                const cur = queue.shift();
-
-                if (cur.steps > 0) {
-                    count++;
-                    if (count >= cap) return count;
-                }
-
-                if (cur.steps >= maxSteps) continue;
-
-                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
-
-                for (const nb of neighbors) {
-                    if (
-                        blockedPlayer !== null &&
-                        nb.row === state.players[blockedPlayer].row &&
-                        nb.col === state.players[blockedPlayer].col
-                    ) {
-                        continue;
-                    }
-
-                    const key = `${nb.row},${nb.col}`;
-                    if (!visited.has(key)) {
-                        visited.add(key);
-                        queue.push({
-                            row: nb.row,
-                            col: nb.col,
-                            steps: cur.steps + 1
-                        });
-                    }
-                }
-            }
-
-            return count;
-        }
-
-        function simulateWallGain(state, player, dir) {
-            const p = player;
-            const opp = 1 - p;
-            const pl = state.players[p];
-
-            if (state.board[pl.row][pl.col].walls[dir]) {
-                return { valid: false };
-            }
-
-            const oppDir = {
-                top: 'bottom',
-                bottom: 'top',
-                left: 'right',
-                right: 'left'
-            }[dir];
-
-            const dr = {
-                top: -1,
-                bottom: 1,
-                left: 0,
-                right: 0
-            }[dir];
-
-            const dc = {
-                top: 0,
-                bottom: 0,
-                left: -1,
-                right: 1
-            }[dir];
-
-            const nr = pl.row + dr;
-            const nc = pl.col + dc;
-
-            if (!isInBounds(nr, nc)) {
-                return { valid: false };
-            }
-
-            if (state.board[nr][nc].walls[oppDir]) {
-                return { valid: false };
-            }
-
-            const beforeOppMob = countMobility(state, opp);
-            const beforeOppReach = countReachableFromState(
-                state,
-                state.players[opp].row,
-                state.players[opp].col,
-                3,
-                p,
-                18
-            );
-
-            const sim = cloneState(state);
-            sim.board[pl.row][pl.col].walls[dir] = true;
-            sim.board[nr][nc].walls[oppDir] = true;
-
-            const afterOppMob = countMobility(sim, opp);
-            const afterOppReach = countReachableFromState(
-                sim,
-                sim.players[opp].row,
-                sim.players[opp].col,
-                3,
-                p,
-                18
-            );
-
-            const [s0, s1, separated] = computeRegionsFromState(sim);
-            const myArea = p === 0 ? s0 : s1;
-            const oppArea = p === 0 ? s1 : s0;
-
-            const gain =
-                (beforeOppMob - afterOppMob) * 4 +
-                (beforeOppReach - afterOppReach) * 2 +
-                (myArea - oppArea) * 0.4;
-
-            return {
-                valid: true,
-                gain,
-                separated,
-                diff: myArea - oppArea
-            };
-        }
         function computeRegionsFromState(state) {
             const board = state.board;
             const players = state.players;
