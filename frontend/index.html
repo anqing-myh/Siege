@@ -2526,20 +2526,19 @@
         overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
     }
 
-    async function updateVersionInfo() {
-        try {
-            const res = await fetch('../version.json'); // 注意路径，根据 frontend 位置调整
-            if (!res.ok) throw new Error('无法获取 version.json');
-            const data = await res.json();
-            const el = document.getElementById('versionInfo');
-            el.textContent = `版本: ${data.version} - ${data.message} (${data.date})`;
-        } catch (err) {
-            console.error(err);
-            document.getElementById('versionInfo').textContent = '版本信息获取失败';
-        }
-    }
-
-    updateVersionInfo();
+    fetch('./version.json')
+    .then(res => {
+        if (!res.ok) throw new Error('version.json not found');
+        return res.json();
+    })
+    .then(data => {
+        document.getElementById('version').textContent =
+        data.message || '暂无提交信息';
+    })
+    .catch(err => {
+        console.error(err);
+        document.getElementById('version').textContent = '版本信息获取失败';
+    });
 
     // ---- 启动 ----
     // 注意：需要在 #p2pRoomPanel 隐藏的状态下初始化
