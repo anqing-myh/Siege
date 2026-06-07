@@ -1130,9 +1130,9 @@
             visited.add(`${start.row},${start.col}`);
             while (queue.length > 0) {
                 const cur = queue.shift();
-                //if (cur.steps > 0) {
+                if (cur.steps > 0) {
                     reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
-                //}
+                }
                 if (cur.steps >= 3) continue;
                 const neighbors = getNeighbors(cur.row, cur.col);
                 for (const nb of neighbors) {
@@ -1144,11 +1144,6 @@
                 }
             }
             const wallDirs = ['top','right','bottom','left'];
-            for (const dir of wallDirs) {
-                if (!state.board[start.row][start.col].walls[dir]) {
-                    actions.push({ target: start, dir, moveSteps: 0 });
-                }
-            }
             let bestScore = -Infinity;
             let bestAction = null;
             const actions = [];
@@ -1526,7 +1521,7 @@
                     }
                     if (bestMandatory) {
                         // 越接近必经格，分数越高
-                        score += Math.max(0, 12 - bestMandatory.distFromAI) * 50;
+                        score += Math.max(0, 12 - bestMandatory.distFromAI) * 35;
 
                         // 如果对手比AI更接近这个必经格，AI更应该加速抢点
                         if (bestMandatory.distFromOpp < bestMandatory.distFromAI) {
@@ -1557,9 +1552,8 @@
             
             // 死路惩罚：如果当前位置只有1个或0个可移动方向，强烈惩罚
             if (mobility <= 1) {
-                const endgameFactor = (game.turnCount>=9) ? 0.3 : 1;
-                score -= (3 - mobility) * 60 * endgameFactor;
-            }  
+                score -= (3 - mobility) * 60;
+            }            
             // 惩罚不必要的靠近边缘行为：计算到棋盘中心的距离和到边缘的距离
             // 如果AI更靠近边缘而不是中心，且还有开阔区域可去，则惩罚
             const edgeDistR = Math.min(pl.row, BOARD_SIZE - 1 - pl.row);
