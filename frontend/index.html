@@ -1061,7 +1061,7 @@
             evalCache.clear();
             mandatoryCache.clear();
             setTimeout(() => {
-            const bestAction = aiSearch(3);
+            const bestAction = aiChooseAction();
             if (!bestAction) {
                 game.aiThinking = false;
                 endTurn();
@@ -1127,6 +1127,228 @@
             clearPendingPlayerInput();
             endTurn();
             }, 30);
+        }
+
+        function aiChooseAction() {
+            if (isMonteCarloEndgame(game)) {
+                return aiMonteCarloSearch(80, 40);
+            }
+
+            return aiSearch(3);
+        }
+        function isMonteCarloEndgame(state) {
+            const [s0, s1, sep] = computeRegionsFromState(state);
+            if (sep) return true;
+            const p0 = state.players[0];
+            const p1 = state.players[1];
+            const dist = shortestDistanceFromState(
+                state,
+                p0.row,
+                p0.col,
+                p1.row,
+                p1.col
+            );
+            return (
+                state.turnCount >= 18 ||
+                dist <= 6 ||
+                Math.min(s0, s1) <= 18
+            );
+        }
+        function aiMonteCarloSearch(simsPerAction = 80, maxSteps = 40) {
+            const p = game.currentPlayer;
+            let actions = generateAIActionsFromState(game, p);
+            if (actions.length === 0) return null;
+            // 先用原评估排序，避免对太多垃圾动作模拟
+            for (const act of actions) {
+                const cloned = cloneGameWithAction(game, act, p);
+                act._score = evaluateStateCached(cloned, p);
+            }
+            actions.sort((a, b) => b._score - a._score);
+            actions = actions.slice(0, 24);
+            let bestAction = null;
+            let bestScore = -Infinity;
+            for (const act of actions) {
+                let total = 0;
+                for (let i = 0; i < simsPerAction; i++) {
+                    const cloned = cloneGameWithAction(game, act, p);
+                    const score = monteCarloPlayout(cloned, 1 - p, p, maxSteps);
+                    total += score;
+                }
+                const avg = total / simsPerAction;
+                // 混合一点静态评估，防止模拟随机性太大
+                const finalScore = avg * 1000 + act._score * 0.15;
+                if (finalScore > bestScore) {
+                    bestScore = finalScore;
+                    bestAction = act;
+                }
+            }
+            if (!bestAction) return aiSearch(3);
+            return {
+                moves: bestAction.moves,
+                wallDir: bestAction.wallDir
+            };
+        }
+        function generateAIActionsFromState(state, p) {
+    const opp = 1 - p;
+            const start = {
+                row: state.players[p].row,
+                col: state.players[p].col
+            };
+
+            const reachable = [];
+            const visited = new Set();
+            const queue = [{ row: start.row, col: start.col, steps: 0, path: [start] }];
+
+            visited.add(`${start.row},${start.col}`);
+
+            while (queue.length > 0) {
+                const cur = queue.shift();
+
+                if (cur.steps > 0) {
+                    reachable.push(cur);
+                }
+
+                if (cur.steps >= 3) continue;
+
+                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
+
+                for (const nb of neighbors) {
+                    const key = `${nb.row},${nb.col}`;
+
+                    if (
+                        !visited.has(key) &&
+                        !(nb.row === state.players[opp].row && nb.col === state.players[opp].col)
+                    ) {
+                        visited.add(key);
+                        queue.push({
+                            row: nb.row,
+                            col: nb.col,
+                            steps: cur.steps + 1,
+                            path: [...cur.path, nb]
+                        });
+                    }
+                }
+            }
+
+            const wallDirs = ['top', 'right', 'bottom', 'left'];
+            const actions = [];
+
+            for (const target of reachable) {
+                for (const dir of wallDirs) {
+                    const cloned = cloneState(state);
+                    const pl = cloned.players[p];
+
+                    pl.row = target.row;
+                    pl.col = target.col;
+
+                    if (!canPlaceWallFromState(cloned, pl.row, pl.col, dir)) continue;
+
+                    actions.push({
+                        moves: target.path.slice(1),
+                        target: { row: target.row, col: target.col },
+                        wallDir: dir
+                    });
+                }
+            }
+
+            return actions;
+        }
+        function canPlaceWallFromState(state, r, c, dir) {
+            if (!isInBounds(r, c)) return false;
+            if (state.board[r][c].walls[dir]) return false;
+
+            const oppDir = {
+                top: 'bottom',
+                bottom: 'top',
+                left: 'right',
+                right: 'left'
+            }[dir];
+
+            const dr = {
+                top: -1,
+                bottom: 1,
+                left: 0,
+                right: 0
+            }[dir];
+
+            const dc = {
+                top: 0,
+                bottom: 0,
+                left: -1,
+                right: 1
+            }[dir];
+
+            const nr = r + dr;
+            const nc = c + dc;
+
+            if (!isInBounds(nr, nc)) return false;
+            if (state.board[nr][nc].walls[oppDir]) return false;
+
+            return true;
+        }
+        function cloneGameWithAction(state, action, p) {
+            const cloned = cloneState(state);
+            const pl = cloned.players[p];
+            for (const move of action.moves) {
+                pl.row = move.row;
+                pl.col = move.col;
+            }
+            const dir = action.wallDir;
+            const oppDir = {
+                top: 'bottom',
+                bottom: 'top',
+                left: 'right',
+                right: 'left'
+            }[dir];
+            const dr = {
+                top: -1,
+                bottom: 1,
+                left: 0,
+                right: 0
+            }[dir];
+            const dc = {
+                top: 0,
+                bottom: 0,
+                left: -1,
+                right: 1
+            }[dir];
+            const nr = pl.row + dr;
+            const nc = pl.col + dc;
+            cloned.board[pl.row][pl.col].walls[dir] = true;
+            if (isInBounds(nr, nc)) {
+                cloned.board[nr][nc].walls[oppDir] = true;
+            }
+            return cloned;
+        }
+        function monteCarloPlayout(state, currentPlayer, aiPlayer, maxSteps) {
+            for (let step = 0; step < maxSteps; step++) {
+                const [s0, s1, sep] = computeRegionsFromState(state);
+                if (sep) {
+                    const mySize = aiPlayer === 0 ? s0 : s1;
+                    const oppSize = aiPlayer === 0 ? s1 : s0;
+
+                    if (mySize > oppSize) return 1;
+                    if (mySize < oppSize) return -1;
+                    return 0;
+                }
+                let actions = generateAIActionsFromState(state, currentPlayer);
+                if (actions.length === 0) {
+                    return currentPlayer === aiPlayer ? -1 : 1;
+                }
+                for (const act of actions) {
+                    const cloned = cloneGameWithAction(state, act, currentPlayer);
+                    act._score = evaluateStateRaw(cloned, currentPlayer);
+                }
+                actions.sort((a, b) => b._score - a._score);
+                const topN = Math.min(6, actions.length);
+                const chosen = actions[Math.floor(Math.random() * topN)];
+                state = cloneGameWithAction(state, chosen, currentPlayer);
+                currentPlayer = 1 - currentPlayer;
+            }
+            const finalScore = evaluateStateRaw(state, aiPlayer);
+            if (finalScore > 300) return 0.5;
+            if (finalScore < -300) return -0.5;
+            return finalScore / 1000;
         }
 
         // AI 搜索：返回 { moves: [{row,col}...], wallDir: string } 或 null
