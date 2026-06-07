@@ -2093,9 +2093,13 @@
         return game.currentPlayer === wsPlayerIndex;
     }
 
+    function isPlayerInputLocked() {
+        return game.aiThinking || game.currentPlayer === 1; // AI回合锁定玩家
+    }
     // ---- 电脑端键盘事件 ----
     if (!isMobile) {
         document.addEventListener('keydown', (e) => {
+            if (isPlayerInputLocked()) { e.preventDefault(); return; }
             const key = e.key;
             if (!canOperate()) return;
             if (key === 'w' || key === 'W' || key === 'ArrowUp') {
@@ -2183,6 +2187,7 @@
         }
         // 移动端点击事件绑定
         canvas.addEventListener('click', (e) => {
+            if (isPlayerInputLocked()) return;
             if (!canOperate()) return;
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
