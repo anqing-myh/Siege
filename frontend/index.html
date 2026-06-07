@@ -515,7 +515,7 @@
         visited.add(`${r},${c}`);
         while (queue.length > 0) {
             const cur = queue.shift();
-            if (cur.steps > 0) result.push({ row: cur.row, col: cur.col });
+            result.push({ row: cur.row, col: cur.col });
             if (cur.steps >= maxSteps) continue;
             const neighbors = getNeighbors(cur.row, cur.col);
             for (const nb of neighbors) {
@@ -1134,9 +1134,7 @@
             visited.add(`${start.row},${start.col}`);
             while (queue.length > 0) {
                 const cur = queue.shift();
-                if (cur.steps > 0) {
-                    reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
-                }
+                reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 if (cur.steps >= 3) continue;
                 const neighbors = getNeighbors(cur.row, cur.col);
                 for (const nb of neighbors) {
@@ -1254,9 +1252,7 @@
             visited.add(`${start.row},${start.col}`);
             while (queue.length > 0) {
                 const cur = queue.shift();
-                if (cur.steps > 0) {
-                    reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
-                }
+                reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 if (cur.steps >= 3) continue;
                 const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
@@ -1350,9 +1346,7 @@
             visited.add(`${start.row},${start.col}`);
             while (queue.length > 0) {
                 const cur = queue.shift();
-                if (cur.steps > 0) {
-                    reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
-                }
+                reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 if (cur.steps >= 3) continue;
                 const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                 for (const nb of neighbors) {
@@ -1672,7 +1666,7 @@
                 oppVisited.add(`${oppPl.row},${oppPl.col}`);
                 while (oppQueue.length > 0) {
                     const cur = oppQueue.shift();
-                    if (cur.steps > 0) oppReachable.push(cur);
+                    oppReachable.push(cur);
                     if (cur.steps >= 3) continue;
                     const neighbors = getNeighborsFromState(state, cur.row, cur.col);
                     for (const nb of neighbors) {
