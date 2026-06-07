@@ -1,34 +1,38 @@
-name: Update Version JSON
+name: update-version
 
 on:
   push:
-    branches: [ main ] # 每次 push 到 main 分支触发
+    branches:
+      - main
+
+permissions:
+  contents: write
 
 jobs:
   update-version:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get latest commit
-        id: commit
+      - name: Generate version.json
         run: |
-          COMMIT_SHA=$(git rev-parse --short HEAD)
-          COMMIT_MSG=$(git log -1 --pretty=%s)
-          COMMIT_DATE=$(git log -1 --pretty=%ad --date=short)
-          echo "sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
-          echo "msg=$COMMIT_MSG" >> $GITHUB_OUTPUT
-          echo "date=$COMMIT_DATE" >> $GITHUB_OUTPUT
+          cat > version.json <<EOF
+          {
+            "version": "$(date +'%Y.%m.%d.%H%M%S')",
+            "commit": "${GITHUB_SHA}",
+            "updatedAt": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          }
+          EOF
 
-      - name: Update version.json
+      - name: Commit and push changes
         run: |
-          echo "{
-            \"version\": \"${{ steps.commit.outputs.sha }}\",
-            \"message\": \"${{ steps.commit.outputs.msg }}\",
-            \"date\": \"${{ steps.commit.outputs.date }}\"
-          }" > version.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add version.json
-          git commit -m "Update version.json to ${{ steps.commit.outputs.sha }}"
+          git commit -m "Update version.json" || echo "No changes to commit"
           git push
