@@ -894,7 +894,9 @@ function applyWall(state, r, c, dir) {
     if (isInBounds(oppR, oppC)) state.board[oppR][oppC].walls[oppDir] = true;
 }
 
-function canOpponentWinInOne(state, aiPlayer) {
+// 检测对手下一步能造成的最坏情况：{ canWin, minAIArea }
+// canWin: 对手能否立刻赢；minAIArea: 对手所有动作中 AI 剩余最小可达面积
+function assessOpponentThreats(state, aiPlayer) {
     const opp = 1 - aiPlayer;
     const oppPl = state.players[opp];
     const aiPl = state.players[aiPlayer];
@@ -912,6 +914,8 @@ function canOpponentWinInOne(state, aiPlayer) {
         }
     }
     const wallDirs = ['top','right','bottom','left'];
+    let canWin = false;
+    let minAIArea = 49;
     for (const target of reachable) {
         for (const dir of wallDirs) {
             if (state.board[target.row][target.col].walls[dir]) continue;
@@ -926,11 +930,19 @@ function canOpponentWinInOne(state, aiPlayer) {
             const [s0, s1, sep] = computeRegionsFromState(cloned);
             if (sep) {
                 const score = (opp === 0) ? (s0 - s1) : (s1 - s0);
-                if (score > 0) return true;
+                if (score > 0) { canWin = true; minAIArea = 0; return { canWin, minAIArea }; }
+                minAIArea = 0;
+            } else {
+                const aiArea = bfsReachCount(cloned, aiPl.row, aiPl.col, target.row, target.col, 49);
+                if (aiArea < minAIArea) minAIArea = aiArea;
             }
         }
     }
-    return false;
+    return { canWin, minAIArea };
+}
+
+function canOpponentWinInOne(state, aiPlayer) {
+    return assessOpponentThreats(state, aiPlayer).canWin;
 }
 
 function oppSearch(state, depth, maxPlayer, alpha) {
@@ -1101,13 +1113,16 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
         } else {
             score = evaluateStateRaw(cloned, p);
         }
-        const oppCanWin = canOpponentWinInOne(cloned, p);
-        results.push({ path, score, oppCanWin });
+        // 完整枚举对手所有下一手，检测立即赢和面积威胁（独立于搜索深度）
+        const threats = assessOpponentThreats(cloned, p);
+        results.push({ path, score, oppCanWin: threats.canWin, minAIArea: threats.minAIArea });
         if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
     }
 
     const validResults = results.filter(r => r && !r.immediate && !r.suicide);
     const allLeadToOppWin = validResults.length > 0 && validResults.every(r => r.oppCanWin);
+    // 所有候选中对手能造成的最大 AI 面积（用于判断威胁是否可规避）
+    const bestMinAIArea = validResults.reduce((m, r) => Math.max(m, r.minAIArea || 49), 0);
 
     for (let ci = 0; ci < total; ci++) {
         const r = results[ci];
@@ -1119,8 +1134,15 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
             continue;
         }
         let score = r.score;
-        if (!r.suicide && r.oppCanWin && !allLeadToOppWin) {
-            score = -4000 + r.score * 0.01;
+        if (!r.suicide) {
+            if (r.oppCanWin && !allLeadToOppWin) {
+                // 对手能立刻赢，且存在不被赢的选择 → 极低分
+                score = -4000 + r.score * 0.01;
+            } else if (r.minAIArea !== undefined && r.minAIArea <= 8 && bestMinAIArea > 8) {
+                // 对手能把 AI 圈到 ≤8 格，且存在安全选择 → 重惩罚，按威胁程度分级
+                const penalty = r.minAIArea <= 3 ? 3500 : r.minAIArea <= 6 ? 2500 : 1500;
+                score = -penalty + r.score * 0.01;
+            }
         }
         if (score > bestScore) {
             bestScore = score;
