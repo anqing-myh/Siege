@@ -413,12 +413,12 @@
         </div>
     </div>
     <div id="aiControlBar">
+        <div id="aiProgressBar"><div id="aiProgressFill"></div></div>
         <div id="difficultyRow">
             <span>难度：</span>
             <button class="diff-btn active" data-diff="expert">专家</button>
             <button class="diff-btn" data-diff="master">大师</button>
         </div>
-        <div id="aiProgressBar"><div id="aiProgressFill"></div></div>
     </div>
     <div id="bottomBar">
         <div id="statsText">战绩：您 0 胜 - 对方 0 胜</div>
@@ -1186,12 +1186,17 @@ self.onmessage = function(e) {
     };
     const stats = {
         pvp: { wins: 0, losses: 0, draws: 0 },
-        pve: { wins: 0, losses: 0, draws: 0 },
+        pve_expert: { wins: 0, losses: 0, draws: 0 },
+        pve_master: { wins: 0, losses: 0, draws: 0 },
         p2p: { wins: 0, losses: 0, draws: 0 }
     };
 
     // 难度：'expert'=搜索深度3, 'master'=搜索深度4
     let aiDifficulty = 'expert';
+
+    function getStatsKey() {
+        return game.mode === 'pve' ? 'pve_' + aiDifficulty : game.mode;
+    }
 
     // ---- DOM ----
     const canvas = document.getElementById('boardCanvas');
@@ -1538,22 +1543,23 @@ self.onmessage = function(e) {
 
     function updateStatsDisplay() {
         const statsText = document.getElementById('statsText');
-        if (!statsText || !stats[game.mode]) return;
-
-        const s = stats[game.mode];
-
+        if (!statsText) return;
+        const key = getStatsKey();
+        const s = stats[key];
+        if (!s) return;
         statsText.textContent =
             `${getModeLabel()}战绩：您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
     }
 
     function recordGameResult() {
-        if (!stats[game.mode]) return;
+        const key = getStatsKey();
+        if (!stats[key]) return;
         if (game.winner === 0) {
-            stats[game.mode].wins++;
+            stats[key].wins++;
         } else if (game.winner === 1) {
-            stats[game.mode].losses++;
+            stats[key].losses++;
         } else if (game.winner === 'draw') {
-            stats[game.mode].draws++;
+            stats[key].draws++;
         }
         updateStatsDisplay();
     }
@@ -2313,6 +2319,7 @@ self.onmessage = function(e) {
             diffBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             aiDifficulty = btn.dataset.diff;
+            updateStatsDisplay();
         });
     });
 
