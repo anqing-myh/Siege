@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.2.4 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.2.5 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -1180,16 +1180,24 @@ function aiSearch(depth) {
     // 必经第一步检测（中后期）：若所有到对手的路都要经过某个第一步，优先冲那里
     const forcedStep = !isEarlyGame ? findForcedFirstStep(game, p) : null;
 
-    // 唯一通路：快速冲向那个方向
+    // 唯一通路：快速冲向那个方向（先过滤自杀候选，候选不足则退回全量）
     if (!isEarlyGame) {
         const openPath = findUniqueOpenPath(game, p);
         if (openPath) {
             const distTarget = Math.abs(openPath.row - oppStart.row) + Math.abs(openPath.col - oppStart.col);
             const urgentActions = actions.filter(a => {
                 const d = Math.abs(a.target.row - oppStart.row) + Math.abs(a.target.col - oppStart.col);
-                return d < distTarget + 3;
+                if (d >= distTarget + 3) return false;
+                // 预过滤自杀：落子后AI面积必须 > 6
+                const c = cloneState(game);
+                c.players[p].row = a.target.row; c.players[p].col = a.target.col;
+                applyWall(c, a.target.row, a.target.col, a.dir);
+                const area = bfsReachCount(c, a.target.row, a.target.col, c.players[1-p].row, c.players[1-p].col, 49);
+                if (area <= 6) return false;
+                a._cloned = c;
+                return true;
             });
-            if (urgentActions.length > 0 && urgentActions.length < actions.length * 0.4) {
+            if (urgentActions.length >= 3 && urgentActions.length < actions.length * 0.4) {
                 return runSearch(urgentActions, depth, p, start, oppStart, forcedStep, false);
             }
         }
