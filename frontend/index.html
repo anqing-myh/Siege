@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.2.7 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.2.9 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -929,7 +929,7 @@ function assessOpponentThreats(state, aiPlayer) {
                 }
                 minAIArea = 0;
             } else {
-                const aiArea = bfsReachCount(state, aiPl.row, aiPl.col, target.row, target.col, 12);
+                const aiArea = bfsReachCount(state, aiPl.row, aiPl.col, target.row, target.col, 20);
                 if (aiArea < minAIArea) minAIArea = aiArea;
             }
             state.board[target.row][target.col].walls[dir] = false;
@@ -998,8 +998,8 @@ function oppSearch(state, depth, maxPlayer, alpha) {
     });
     scored.sort((a, b) => a.s - b.s);
     const cap = scored.length <= 16 ? scored.length
-              : scored.length <= 32 ? Math.min(scored.length, 20)
-              : Math.min(scored.length, 14);
+              : scored.length <= 32 ? Math.min(scored.length, 26)
+              : Math.min(scored.length, 20);
     let beta = Infinity;
     for (let i = 0; i < cap; i++) {
         const { cloned } = scored[i];
@@ -1063,8 +1063,8 @@ function maxSearch(state, depth, maxPlayer, beta) {
     });
     scored.sort((a, b) => b.s - a.s);
     const cap = scored.length <= 16 ? scored.length
-              : scored.length <= 32 ? Math.min(scored.length, 20)
-              : Math.min(scored.length, 14);
+              : scored.length <= 32 ? Math.min(scored.length, 26)
+              : Math.min(scored.length, 20);
     let alpha = -Infinity;
     for (let i = 0; i < cap; i++) {
         const { cloned } = scored[i];
@@ -1188,12 +1188,11 @@ function aiSearch(depth) {
             const urgentActions = actions.filter(a => {
                 const d = Math.abs(a.target.row - oppStart.row) + Math.abs(a.target.col - oppStart.col);
                 if (d >= distTarget + 3) return false;
-                // 预过滤自杀：落子后AI面积必须 > 6
                 const c = cloneState(game);
                 c.players[p].row = a.target.row; c.players[p].col = a.target.col;
                 applyWall(c, a.target.row, a.target.col, a.dir);
-                const area = bfsReachCount(c, a.target.row, a.target.col, c.players[1-p].row, c.players[1-p].col, 49);
-                if (area <= 6) return false;
+                // 只有对手下一步能立刻赢才排除此动作
+                if (assessOpponentThreats(c, p).canWin) return false;
                 a._cloned = c;
                 return true;
             });
@@ -1203,24 +1202,24 @@ function aiSearch(depth) {
         }
     }
 
-    // 动态搜索深度
+    // 动态搜索深度：中后期加深
     let searchDepth = depth;
-    if (actions.length <= 16)      searchDepth = Math.min(depth + 1, 5); // 极后期+1（原+2，过深）
-    else if (actions.length >= 60) searchDepth = Math.max(depth - 1, 3); // 前期-1
-    // actions 17-59：保持原始深度，不加不减
+    if (actions.length <= 20)      searchDepth = Math.min(depth + 1, 6); // 极后期+1
+    else if (actions.length <= 40) searchDepth = Math.min(depth + 1, 5); // 中后期+1
+    else if (actions.length >= 70) searchDepth = Math.max(depth - 1, 3); // 前期开局-1
 
-    // 候选数
+    // 候选数：中后期适当放宽
     let maxCandidates;
     if (isEarlyGame) {
-        maxCandidates = 12;                        // 开局从6→12，保留更多选项
+        maxCandidates = 12;
     } else if (actions.length <= 16) {
-        maxCandidates = actions.length;            // 极后期全搜
+        maxCandidates = actions.length;                              // 极后期全搜
     } else if (actions.length <= 32) {
-        maxCandidates = Math.min(actions.length, depth >= 4 ? 24 : 20); // 后期适当限制
+        maxCandidates = Math.min(actions.length, depth >= 4 ? 28 : 24); // 后期
     } else if (actions.length <= 50) {
-        maxCandidates = depth >= 4 ? 18 : 14;     // 中期
+        maxCandidates = depth >= 4 ? 22 : 18;                       // 中期
     } else {
-        maxCandidates = depth >= 4 ? 14 : 10;     // 前期候选已经够用
+        maxCandidates = depth >= 4 ? 16 : 12;                       // 前期
     }
 
     // 预评分：加入必经第一步奖励 + 封自己惩罚
@@ -1232,11 +1231,11 @@ function aiSearch(depth) {
         pl.row = act.target.row; pl.col = act.target.col;
         applyWall(cloned, pl.row, pl.col, act.dir);
         const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, cloned.players[opp].row, cloned.players[opp].col, 49);
-        if (myAreaAfter <= 6) {
-            act._score = -9999 + myAreaAfter * 200;
-            act._cloned = cloned;
-            continue;
-        }
+        // 预评分惩罚：面积极小时降低优先级，但不排除（让 runSearch 做最终判断）
+        let areaPenalty = 0;
+        if (myAreaAfter <= 4) areaPenalty = 3000;       // 几乎必死，排到最后
+        else if (myAreaAfter <= 6) areaPenalty = 1500;
+        else if (myAreaAfter <= 9) areaPenalty = (9 - myAreaAfter) * 200;
         const selfBlockPenalty = myAreaAfter < myFullReach ? (myFullReach - myAreaAfter) * 25 : 0;
         let forcedBonus = 0;
         if (forcedStep && act.moveSteps >= 1) {
@@ -1245,7 +1244,7 @@ function aiSearch(depth) {
             if (distActToForced < distStartToForced) forcedBonus = 80;
         }
         const evalScore = useFullEval ? evaluateStateCached(cloned, p) : evaluateStateLight(cloned, p);
-        act._score = evalScore + act.moveSteps * 30 - selfBlockPenalty + forcedBonus;
+        act._score = evalScore + act.moveSteps * 30 - selfBlockPenalty - areaPenalty + forcedBonus;
         act._cloned = cloned;
     }
     actions.sort((a, b) => b._score - a._score);
@@ -1280,8 +1279,16 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
         }
         const myAreaNow = bfsReachCount(cloned, act.target.row, act.target.col,
             cloned.players[1-p].row, cloned.players[1-p].col, 49);
-        if (myAreaNow <= 6) {
-            results.push({ path, score: -5000 + myAreaNow * 200, suicide: true });
+        // 自己走进极小区域（≤4格）直接视为自杀，无需对手确认
+        if (myAreaNow <= 4) {
+            results.push({ path, score: -5000 + myAreaNow * 100, suicide: true });
+            if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
+            continue;
+        }
+        const threats = assessOpponentThreats(cloned, p);
+        // 对手下一步可立刻赢 → 标为 suicide（最后备选）
+        if (threats.canWin) {
+            results.push({ path, score: -4800 + myAreaNow * 80, suicide: true });
             if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
             continue;
         }
@@ -1291,8 +1298,7 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
         } else {
             score = evaluateStateRaw(cloned, p);
         }
-        const threats = assessOpponentThreats(cloned, p);
-        results.push({ path, score, oppCanWin: threats.canWin, minAIArea: threats.minAIArea });
+        results.push({ path, score, oppCanWin: false, minAIArea: threats.minAIArea, myArea: myAreaNow });
         if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
     }
 
@@ -1300,6 +1306,7 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
     const validResults = results.filter(r => r && !r.immediate && !r.suicide);
     const allLeadToOppWin = validResults.length > 0 && validResults.every(r => r.oppCanWin);
     const bestMinAIArea = validResults.reduce((m, r) => Math.max(m, r.minAIArea || 49), 0);
+    const bestMyArea = validResults.reduce((m, r) => Math.max(m, r.myArea || 49), 0);
 
     for (let ci = 0; ci < total; ci++) {
         const r = results[ci];
@@ -1312,14 +1319,22 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
         }
         let score;
         if (r.suicide) {
+            // 对手可立刻赢：只有在没有其他选择时才考虑
             score = -9000 + r.score * 0.001;
         } else {
             score = r.score;
-            if (r.oppCanWin && !allLeadToOppWin) {
-                score = -4000 + r.score * 0.01;
-            } else if (r.minAIArea !== undefined && r.minAIArea <= 8 && bestMinAIArea > 8) {
-                const penalty = r.minAIArea <= 3 ? 3500 : r.minAIArea <= 6 ? 2500 : 1500;
+            // 惩罚层级：优先避免 minAIArea 极小（下一步被封死风险）
+            if (r.minAIArea !== undefined && r.minAIArea <= 5 && bestMinAIArea > 5) {
+                // 对手一步后 AI 剩余面积极小，高惩罚
+                const penalty = r.minAIArea <= 2 ? 3800 : r.minAIArea <= 4 ? 2800 : 1800;
                 score = -penalty + r.score * 0.01;
+            } else if (r.myArea !== undefined && r.myArea <= 8 && bestMyArea > 8) {
+                // AI 本步活动面积小但还没被封，中等惩罚
+                const penalty = r.myArea <= 4 ? 2000 : r.myArea <= 6 ? 1200 : 600;
+                score = -penalty + r.score * 0.01;
+            } else if (r.minAIArea !== undefined && r.minAIArea <= 10 && bestMinAIArea > 10) {
+                const penalty = r.minAIArea <= 7 ? 1000 : 500;
+                score = r.score - penalty;
             }
         }
         if (score > bestScore) {
