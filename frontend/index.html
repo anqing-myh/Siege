@@ -413,12 +413,12 @@
         </div>
     </div>
     <div id="aiControlBar">
+        <div id="aiProgressBar"><div id="aiProgressFill"></div></div>
         <div id="difficultyRow">
             <span>难度：</span>
             <button class="diff-btn active" data-diff="expert">专家</button>
             <button class="diff-btn" data-diff="master">大师</button>
         </div>
-        <div id="aiProgressBar"><div id="aiProgressFill"></div></div>
     </div>
     <div id="bottomBar">
         <div id="statsText">战绩：您 0 胜 - 对方 0 胜</div>
@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.1.0 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.2.4 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -884,6 +884,66 @@ function emergencyTrap(start, oppStart, actions, p) {
     return path ? { moves: path.slice(1), wallDir: best.dir } : null;
 }
 
+// 检测对手下一步能造成的最坏情况：{ canWin, minAIArea }
+function assessOpponentThreats(state, aiPlayer) {
+    const opp = 1 - aiPlayer;
+    const oppPl = state.players[opp];
+    const aiPl = state.players[aiPlayer];
+    const reachable = [];
+    const visited = new Set([oppPl.row * BOARD_SIZE + oppPl.col]);
+    const queue = [{ row: oppPl.row, col: oppPl.col, steps: 0 }];
+    while (queue.length > 0) {
+        const cur = queue.shift();
+        reachable.push({ row: cur.row, col: cur.col });
+        if (cur.steps >= 3) continue;
+        for (const nb of getNeighborsFromState(state, cur.row, cur.col)) {
+            if (nb.row === aiPl.row && nb.col === aiPl.col) continue;
+            const k = nb.row * BOARD_SIZE + nb.col;
+            if (!visited.has(k)) { visited.add(k); queue.push({ row: nb.row, col: nb.col, steps: cur.steps + 1 }); }
+        }
+    }
+    const wallDirs = ['top','right','bottom','left'];
+    const oppDirMap = {top:'bottom', bottom:'top', left:'right', right:'left'};
+    const drMap = {top:-1, bottom:1, left:0, right:0};
+    const dcMap = {top:0, bottom:0, left:-1, right:1};
+    let canWin = false;
+    let minAIArea = 49;
+    const savedOppRow = oppPl.row, savedOppCol = oppPl.col;
+    for (const target of reachable) {
+        for (const dir of wallDirs) {
+            if (state.board[target.row][target.col].walls[dir]) continue;
+            const oppDir = oppDirMap[dir];
+            const oppR = target.row + drMap[dir], oppC = target.col + dcMap[dir];
+            if (!isInBounds(oppR, oppC) || state.board[oppR][oppC].walls[oppDir]) continue;
+            state.board[target.row][target.col].walls[dir] = true;
+            state.board[oppR][oppC].walls[oppDir] = true;
+            state.players[opp].row = target.row; state.players[opp].col = target.col;
+            const [s0, s1, sep] = computeRegionsFromState(state);
+            if (sep) {
+                const score = (opp === 0) ? (s0 - s1) : (s1 - s0);
+                if (score > 0) {
+                    state.board[target.row][target.col].walls[dir] = false;
+                    state.board[oppR][oppC].walls[oppDir] = false;
+                    state.players[opp].row = savedOppRow; state.players[opp].col = savedOppCol;
+                    return { canWin: true, minAIArea: 0 };
+                }
+                minAIArea = 0;
+            } else {
+                const aiArea = bfsReachCount(state, aiPl.row, aiPl.col, target.row, target.col, 12);
+                if (aiArea < minAIArea) minAIArea = aiArea;
+            }
+            state.board[target.row][target.col].walls[dir] = false;
+            state.board[oppR][oppC].walls[oppDir] = false;
+            state.players[opp].row = savedOppRow; state.players[opp].col = savedOppCol;
+        }
+    }
+    return { canWin, minAIArea };
+}
+
+function canOpponentWinInOne(state, aiPlayer) {
+    return assessOpponentThreats(state, aiPlayer).canWin;
+}
+
 // 辅助：快速放墙
 function applyWall(state, r, c, dir) {
     const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
@@ -928,39 +988,33 @@ function oppSearch(state, depth, maxPlayer, alpha) {
         }
     }
     let bestScore = Infinity;
-    // 快速预排序
     const scored = actions.map(act => {
         const cloned = cloneState(state);
-        cloned.players[p].row = act.target.row; cloned.players[p].row = act.target.row;
+        cloned.players[p].row = act.target.row;
         cloned.players[p].col = act.target.col;
         applyWall(cloned, act.target.row, act.target.col, act.dir);
         const s = evaluateStateLight(cloned, maxPlayer);
         return { act, cloned, s };
     });
-    scored.sort((a,b) => a.s - b.s);
-    const cap = scored.length <= 20 ? scored.length : (scored.length <= 40 ? 18 : 14);
+    scored.sort((a, b) => a.s - b.s);
+    const cap = scored.length <= 16 ? scored.length
+              : scored.length <= 32 ? Math.min(scored.length, 24)
+              : Math.min(scored.length, 18);
     let beta = Infinity;
     for (let i = 0; i < cap; i++) {
-        const { act, cloned, s } = scored[i];
+        const { cloned } = scored[i];
         const [s0, s1, sep] = computeRegionsFromState(cloned);
+        let score;
         if (sep) {
-            const score = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
-            if (score < bestScore) bestScore = score;
-            if (bestScore < alpha) return bestScore;
-            if (bestScore < beta) beta = bestScore;
-            continue;
-        }
-        if (depth <= 1) {
-            const score = evaluateStateLight(cloned, maxPlayer);
-            if (score < bestScore) bestScore = score;
-            if (bestScore < alpha) return bestScore;
-            if (bestScore < beta) beta = bestScore;
+            score = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
+        } else if (depth <= 1) {
+            score = evaluateStateLight(cloned, maxPlayer);
         } else {
-            const nextScore = maxSearch(cloned, depth - 1, maxPlayer, bestScore);
-            if (nextScore < bestScore) bestScore = nextScore;
-            if (bestScore < alpha) return bestScore;
-            if (bestScore < beta) beta = bestScore;
+            score = maxSearch(cloned, depth - 1, maxPlayer, bestScore);
         }
+        if (score < bestScore) bestScore = score;
+        if (bestScore < beta) beta = bestScore;
+        if (depth >= 2 && bestScore < alpha) return bestScore;
     }
     return bestScore;
 }
@@ -1007,30 +1061,25 @@ function maxSearch(state, depth, maxPlayer, beta) {
         const s = evaluateStateLight(cloned, maxPlayer);
         return { act, cloned, s };
     });
-    scored.sort((a,b) => b.s - a.s);
-    const cap = scored.length <= 20 ? scored.length : (scored.length <= 40 ? 18 : 14);
+    scored.sort((a, b) => b.s - a.s);
+    const cap = scored.length <= 16 ? scored.length
+              : scored.length <= 32 ? Math.min(scored.length, 24)
+              : Math.min(scored.length, 18);
     let alpha = -Infinity;
     for (let i = 0; i < cap; i++) {
-        const { act, cloned } = scored[i];
+        const { cloned } = scored[i];
         const [s0, s1, sep] = computeRegionsFromState(cloned);
+        let score;
         if (sep) {
-            const score = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
-            if (score > bestScore) bestScore = score;
-            if (bestScore > beta) return bestScore;
-            if (bestScore > alpha) alpha = bestScore;
-            continue;
-        }
-        if (depth <= 1) {
-            const score = evaluateStateLight(cloned, maxPlayer);
-            if (score > bestScore) bestScore = score;
-            if (bestScore > beta) return bestScore;
-            if (bestScore > alpha) alpha = bestScore;
+            score = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
+        } else if (depth <= 1) {
+            score = evaluateStateLight(cloned, maxPlayer);
         } else {
-            const nextScore = oppSearch(cloned, depth - 1, maxPlayer, bestScore);
-            if (nextScore > bestScore) bestScore = nextScore;
-            if (bestScore > beta) return bestScore;
-            if (bestScore > alpha) alpha = bestScore;
+            score = oppSearch(cloned, depth - 1, maxPlayer, bestScore);
         }
+        if (score > bestScore) bestScore = score;
+        if (bestScore > alpha) alpha = bestScore;
+        if (bestScore > beta) return bestScore;
     }
     return bestScore;
 }
@@ -1173,14 +1222,12 @@ function aiSearch(depth) {
         pl.row = act.target.row; pl.col = act.target.col;
         applyWall(cloned, pl.row, pl.col, act.dir);
         const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, cloned.players[opp].row, cloned.players[opp].col, 49);
-        // 自杀直接排最后
-        if (myAreaAfter <= 3) {
-            act._score = -9999 + myAreaAfter * 100;
+        if (myAreaAfter <= 6) {
+            act._score = -9999 + myAreaAfter * 200;
             act._cloned = cloned;
             continue;
         }
         const selfBlockPenalty = myAreaAfter < myFullReach ? (myFullReach - myAreaAfter) * 25 : 0;
-        // 必经第一步奖励
         let forcedBonus = 0;
         if (forcedStep && act.moveSteps >= 1) {
             const distActToForced = Math.abs(act.target.row - forcedStep.row) + Math.abs(act.target.col - forcedStep.col);
@@ -1201,6 +1248,8 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
     let bestAction = null;
     const total = candidates.length;
 
+    // Pass 1：完整评估所有候选，不做 alpha 截断
+    const results = [];
     for (let ci = 0; ci < total; ci++) {
         const act = candidates[ci];
         const cloned = act._cloned || (() => {
@@ -1210,33 +1259,61 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
             return c;
         })();
         const path = findShortestPath(start, act.target, p, cloned);
-        if (!path) continue;
+        if (!path) { results.push(null); continue; }
         const [s0, s1, sep] = computeRegionsFromState(cloned);
         if (sep) {
             const score = (p === 0) ? (s0 - s1) : (s1 - s0);
-            if (score > 0) return { moves: path.slice(1), wallDir: act.dir };
-            if (score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
+            results.push({ path, score, immediate: true });
+            if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
             continue;
         }
-        // 自杀检测：落子后自己的可达区域极小，强惩罚
         const myAreaNow = bfsReachCount(cloned, act.target.row, act.target.col,
             cloned.players[1-p].row, cloned.players[1-p].col, 49);
-        if (myAreaNow <= 3) {
-            const score = -5000 + myAreaNow * 100;
-            if (score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
+        if (myAreaNow <= 6) {
+            results.push({ path, score: -5000 + myAreaNow * 200, suicide: true });
             if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
             continue;
         }
         let score;
         if (searchDepth > 2) {
-            score = oppSearch(cloned, searchDepth - 1, p, bestScore);
+            score = oppSearch(cloned, searchDepth - 1, p, -Infinity);
         } else {
-            score = evaluateStateCached(cloned, p);
+            score = evaluateStateRaw(cloned, p);
         }
-        if (score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
+        const threats = assessOpponentThreats(cloned, p);
+        results.push({ path, score, oppCanWin: threats.canWin, minAIArea: threats.minAIArea });
+        if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
+    }
 
-        if (sendProgress) {
-            self.postMessage({ type: 'progress', value: (ci + 1) / total });
+    // Pass 2：应用威胁惩罚，suicide 候选强制降到最低优先级
+    const validResults = results.filter(r => r && !r.immediate && !r.suicide);
+    const allLeadToOppWin = validResults.length > 0 && validResults.every(r => r.oppCanWin);
+    const bestMinAIArea = validResults.reduce((m, r) => Math.max(m, r.minAIArea || 49), 0);
+
+    for (let ci = 0; ci < total; ci++) {
+        const r = results[ci];
+        if (!r) continue;
+        const act = candidates[ci];
+        if (r.immediate) {
+            if (r.score > 0) return { moves: r.path.slice(1), wallDir: act.dir };
+            if (r.score > bestScore) { bestScore = r.score; bestAction = { moves: r.path.slice(1), wallDir: act.dir }; }
+            continue;
+        }
+        let score;
+        if (r.suicide) {
+            score = -9000 + r.score * 0.001;
+        } else {
+            score = r.score;
+            if (r.oppCanWin && !allLeadToOppWin) {
+                score = -4000 + r.score * 0.01;
+            } else if (r.minAIArea !== undefined && r.minAIArea <= 8 && bestMinAIArea > 8) {
+                const penalty = r.minAIArea <= 3 ? 3500 : r.minAIArea <= 6 ? 2500 : 1500;
+                score = -penalty + r.score * 0.01;
+            }
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            bestAction = { moves: r.path.slice(1), wallDir: act.dir };
         }
     }
     return bestAction;
@@ -1276,7 +1353,8 @@ self.onmessage = function(e) {
     };
     const stats = {
         pvp: { wins: 0, losses: 0, draws: 0 },
-        pve: { wins: 0, losses: 0, draws: 0 },
+        pve_expert: { wins: 0, losses: 0, draws: 0 },
+        pve_master: { wins: 0, losses: 0, draws: 0 },
         p2p: { wins: 0, losses: 0, draws: 0 }
     };
 
@@ -1626,24 +1704,31 @@ self.onmessage = function(e) {
         return '玩家2';
     }
 
+    function getStatsKey() {
+        return game.mode === 'pve' ? 'pve_' + aiDifficulty : game.mode;
+    }
+
     function updateStatsDisplay() {
         const statsText = document.getElementById('statsText');
-        if (!statsText || !stats[game.mode]) return;
-
-        const s = stats[game.mode];
-
+        const key = getStatsKey();
+        if (!statsText || !stats[key]) return;
+        const s = stats[key];
+        const modeLabel = game.mode === 'pve'
+            ? (aiDifficulty === 'master' ? '大师' : '专家')
+            : getModeLabel();
         statsText.textContent =
-            `${getModeLabel()}战绩：您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
+            `[${modeLabel}] 您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
     }
 
     function recordGameResult() {
-        if (!stats[game.mode]) return;
+        const key = getStatsKey();
+        if (!stats[key]) return;
         if (game.winner === 0) {
-            stats[game.mode].wins++;
+            stats[key].wins++;
         } else if (game.winner === 1) {
-            stats[game.mode].losses++;
+            stats[key].losses++;
         } else if (game.winner === 'draw') {
-            stats[game.mode].draws++;
+            stats[key].draws++;
         }
         updateStatsDisplay();
     }
