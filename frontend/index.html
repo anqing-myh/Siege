@@ -202,6 +202,53 @@
             gap: 16px;
             font-size: 14px;
         }
+        #aiControlBar {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            width: 100%;
+        }
+        #difficultyRow {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            color: #c7a77d;
+        }
+        .diff-btn {
+            background: #5a4a3a;
+            border: none;
+            color: #eee;
+            padding: 5px 18px;
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .diff-btn.active {
+            background: #c7a77d;
+            color: #2d2d2d;
+        }
+        .diff-btn:hover { background: #7a6a54; }
+        .diff-btn.active:hover { background: #c7a77d; }
+        #aiProgressBar {
+            width: 100%;
+            max-width: 360px;
+            height: 6px;
+            background: #3a3028;
+            border-radius: 3px;
+            overflow: hidden;
+            display: none;
+        }
+        #aiProgressFill {
+            height: 100%;
+            background: linear-gradient(90deg, #c7a77d, #e8c99a);
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.15s ease;
+        }
 
         #statsText {
             color: #f0d4a0;
@@ -365,6 +412,14 @@
             </div>
         </div>
     </div>
+    <div id="aiControlBar">
+        <div id="difficultyRow">
+            <span>难度：</span>
+            <button class="diff-btn active" data-diff="expert">专家</button>
+            <button class="diff-btn" data-diff="master">大师</button>
+        </div>
+        <div id="aiProgressBar"><div id="aiProgressFill"></div></div>
+    </div>
     <div id="bottomBar">
         <div id="statsText">战绩：您 0 胜 - 对方 0 胜</div>
         <button id="aboutBtn">关于作者</button>
@@ -386,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.0.1 2026/6/7   感谢游玩！
+        <br>版本信息：Version 2.1.0 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -417,6 +472,7 @@ const BOARD_SIZE = 7;
 let game = null;
 let evalCache = new Map();
 let mandatoryCache = new Map();
+let progressCallback = null; // 进度回调
 
 function isInBounds(r, c) { return r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE; }
 
@@ -473,10 +529,10 @@ function getNeighborsFromState(state, r, c) {
     return result;
 }
 
+// 带步数上限的 BFS 可达格数
 function bfsReachCount(state, sr, sc, exR, exC, maxSteps) {
     const visited = new Set();
-    const key0 = sr * BOARD_SIZE + sc;
-    visited.add(key0);
+    visited.add(sr * BOARD_SIZE + sc);
     const queue = [{ row: sr, col: sc, steps: 0 }];
     let count = 1;
     while (queue.length > 0) {
@@ -493,6 +549,27 @@ function bfsReachCount(state, sr, sc, exR, exC, maxSteps) {
         }
     }
     return count;
+}
+
+// 检查是否为"死路"：从 (sr,sc) 出发，若通过 (cr,cc) 是唯一路径且通道宽度 <= 1（即该格是切点）则是死路
+// 判断方法：将 (cr,cc) 移除后，(sr,sc) 仍能到达对侧吗？若不能 => 死路
+function isDeadEndPassage(state, sr, sc, cr, cc, tr, tc) {
+    // BFS from sr,sc to tr,tc avoiding cr,cc
+    if (sr === tr && sc === tc) return false;
+    const queue = [{ row: sr, col: sc }];
+    const vis = new Set([sr * BOARD_SIZE + sc]);
+    const block = cr * BOARD_SIZE + cc;
+    while (queue.length > 0) {
+        const cur = queue.shift();
+        for (const nb of getNeighborsFromState(state, cur.row, cur.col)) {
+            const k = nb.row * BOARD_SIZE + nb.col;
+            if (k === block || vis.has(k)) continue;
+            if (nb.row === tr && nb.col === tc) return true; // 仍能到达 => 不是死路
+            vis.add(k);
+            queue.push(nb);
+        }
+    }
+    return false; // 无法到达 => 此处为死路
 }
 
 function computeRegionsFromState(state) {
@@ -525,17 +602,9 @@ function computeRegionsFromState(state) {
 function countMobility(state, player) {
     const pl = state.players[player];
     let count = 0;
-    const dirs = [{dr:-1,dc:0},{dr:1,dc:0},{dr:0,dc:-1},{dr:0,dc:1}];
     const opp = 1 - player;
-    for (const d of dirs) {
-        const nr = pl.row + d.dr, nc = pl.col + d.dc;
-        if (!isInBounds(nr, nc)) continue;
-        const side = { '-1,0':'top','1,0':'bottom','0,-1':'left','0,1':'right' }[d.dr+','+d.dc];
-        if (state.board[pl.row][pl.col].walls[side]) continue;
-        const oppSide = {top:'bottom',bottom:'top',left:'right',right:'left'}[side];
-        if (state.board[nr][nc].walls[oppSide]) continue;
-        if (nr === state.players[opp].row && nc === state.players[opp].col) continue;
-        count++;
+    for (const nb of getNeighborsFromState(state, pl.row, pl.col)) {
+        if (nb.row !== state.players[opp].row || nb.col !== state.players[opp].col) count++;
     }
     return count;
 }
@@ -607,7 +676,7 @@ function findArticulationPoints(state) {
 }
 
 function findMandatoryCellsBetweenPlayersCached(state, player) {
-    const key = getStateKey(state, player) + '|mandatory';
+    const key = getStateKey(state, player) + '|mc';
     if (mandatoryCache.has(key)) return mandatoryCache.get(key);
     const result = findMandatoryCellsBetweenPlayers(state, player);
     mandatoryCache.set(key, result);
@@ -639,8 +708,7 @@ function findMandatoryCellsBetweenPlayers(state, player) {
 
 function findShortestPath(start, target, player, state) {
     const queue = [{ row: start.row, col: start.col, path: [start] }];
-    const visited = new Set();
-    visited.add(start.row+','+start.col);
+    const visited = new Set([start.row+','+start.col]);
     const opp = 1 - player;
     while (queue.length) {
         const cur = queue.shift();
@@ -666,22 +734,42 @@ function evaluateStateCached(state, maxPlayer) {
     return score;
 }
 
+// 精简版评估，用于深层节点（不调用 findArticulationPoints）
+function evaluateStateLight(state, maxPlayer) {
+    const [s0, s1, sep] = computeRegionsFromState(state);
+    if (sep) return ((maxPlayer === 0) ? (s0 - s1) : (s1 - s0)) * 1000;
+    const p = maxPlayer, opp = 1 - p;
+    const pl = state.players[p], oppPl = state.players[opp];
+    const mySize = (p === 0) ? s0 : s1;
+    const oppSize = (p === 0) ? s1 : s0;
+    const myReach3 = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 3);
+    const oppReach3 = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 3);
+    let score = (myReach3 - oppReach3) * 18 + (mySize - oppSize) * 40;
+    const myMob = countMobility(state, p);
+    const oppMob = countMobility(state, opp);
+    score += (myMob - oppMob) * 25;
+    if (oppMob <= 1) score += (2 - oppMob) * 150;
+    if (myMob <= 1) score -= (2 - myMob) * 120;
+    score += myReach3 * 5;
+    const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+    score += Math.max(0, 8 - distToOpp) * 10;
+    const edgeDist = Math.min(pl.row, BOARD_SIZE - 1 - pl.row, pl.col, BOARD_SIZE - 1 - pl.col);
+    if (edgeDist === 0) score -= 40;
+    else if (edgeDist === 1) score -= 15;
+    return score;
+}
+
+// 完整评估，用于 aiSearch 第一层
 function evaluateStateRaw(state, maxPlayer) {
     const [s0, s1, sep] = computeRegionsFromState(state);
-    if (sep) {
-        const diff = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
-        return diff * 1000;
-    }
+    if (sep) return ((maxPlayer === 0) ? (s0 - s1) : (s1 - s0)) * 1000;
     const p = maxPlayer, opp = 1 - p;
     const pl = state.players[p], oppPl = state.players[opp];
     const mySize = (p === 0) ? s0 : s1;
     const oppSize = (p === 0) ? s1 : s0;
 
-    const myFullReach = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 49);
-    const oppFullReach = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 49);
     const myReach3 = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 3);
     const oppReach3 = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 3);
-
     let score = (myReach3 - oppReach3) * 18 + (mySize - oppSize) * 40;
 
     const myMob = countMobility(state, p);
@@ -690,49 +778,54 @@ function evaluateStateRaw(state, maxPlayer) {
     if (oppMob <= 1) score += (2 - oppMob) * 150;
     if (myMob <= 1) score -= (2 - myMob) * 120;
 
-    const aps = findArticulationPoints(state);
-    const apCount = aps.length;
-    if (apCount <= 2) {
-        const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-        score += Math.max(0, 10 - distToOpp) * 20;
-        if (oppFullReach < myFullReach) score += (myFullReach - oppFullReach) * 15;
-    }
+    // AP/通道分析仅在后期（墙较多时）才值得计算
+    const wallDensity = mySize + oppSize; // 两区域总格数少 => 墙多 => 后期
+    if (wallDensity < 42) { // 整体可用格子减少时才做全局分析
+        const myFullReach = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 49);
+        const oppFullReach = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 49);
 
-    if (state.turnCount >= 6) {
-        const mandatoryCells = findMandatoryCellsBetweenPlayersCached(state, p);
-        if (mandatoryCells.length > 0) {
-            const cell = mandatoryCells[0];
-            if (Number.isFinite(cell.distFromAI)) {
-                score += Math.max(0, 10 - cell.distFromAI) * 30;
-                if (cell.distFromOpp > cell.distFromAI) score += (cell.distFromOpp - cell.distFromAI) * 20;
+        const aps = findArticulationPoints(state);
+        if (aps.length <= 2) {
+            const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+            score += Math.max(0, 10 - distToOpp) * 20;
+            if (oppFullReach < myFullReach) score += (myFullReach - oppFullReach) * 15;
+        }
+
+        if (state.turnCount >= 5) {
+            const mandatoryCells = findMandatoryCellsBetweenPlayersCached(state, p);
+            if (mandatoryCells.length > 0) {
+                const cell = mandatoryCells[0];
+                if (Number.isFinite(cell.distFromAI)) {
+                    score += Math.max(0, 10 - cell.distFromAI) * 30;
+                    if (cell.distFromOpp > cell.distFromAI) score += (cell.distFromOpp - cell.distFromAI) * 20;
+                }
             }
+        }
+
+        if (myFullReach < oppFullReach) {
+            score += myReach3 * 8;
+            const d2 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+            score += Math.max(0, 6 - d2) * 12;
+        }
+        if (oppFullReach <= 15) {
+            const d3 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+            score += (15 - oppFullReach) * 20 + Math.max(0, 7 - d3) * 25;
         }
     }
 
-    if (myFullReach < oppFullReach) {
-        score += myReach3 * 8;
-        const distToOpp2 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-        score += Math.max(0, 6 - distToOpp2) * 12;
-    }
-
-    if (oppFullReach <= 15) {
-        const distToOpp3 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-        score += (15 - oppFullReach) * 20 + Math.max(0, 7 - distToOpp3) * 25;
-    }
-
     score += myReach3 * 5;
-
     const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
     score += Math.max(0, 8 - distToOpp) * 10;
     if (distToOpp === 1) score -= 10;
 
+    // 朝对手方向放墙奖励（降低权重，防止封自己）
     const dirToOppR = oppPl.row - pl.row;
     const dirToOppC = oppPl.col - pl.col;
     const primaryDirR = dirToOppR > 0 ? 'bottom' : dirToOppR < 0 ? 'top' : null;
     const primaryDirC = dirToOppC > 0 ? 'right' : dirToOppC < 0 ? 'left' : null;
     for (const w of ['top','right','bottom','left']) {
         if (!state.board[pl.row][pl.col].walls[w]) continue;
-        if (w === primaryDirR || w === primaryDirC) score += 30;
+        if (w === primaryDirR || w === primaryDirC) score += 12; // 从30降为12
     }
 
     const edgeDist = Math.min(pl.row, BOARD_SIZE - 1 - pl.row, pl.col, BOARD_SIZE - 1 - pl.col);
@@ -748,13 +841,7 @@ function emergencyEscape(start, oppStart, actions, p) {
         const cloned = cloneState(game);
         const pl = cloned.players[p];
         pl.row = act.target.row; pl.col = act.target.col;
-        const dir = act.dir;
-        const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-        const dr = {top:-1, bottom:1, left:0, right:0}[dir];
-        const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-        const oppR = pl.row + dr, oppC = pl.col + dc;
-        cloned.board[pl.row][pl.col].walls[dir] = true;
-        if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
+        applyWall(cloned, pl.row, pl.col, act.dir);
         const [s0, s1, sep] = computeRegionsFromState(cloned);
         if (sep) {
             const score = (p === 0) ? (s0 - s1) : (s1 - s0);
@@ -776,13 +863,7 @@ function emergencyTrap(start, oppStart, actions, p) {
         const cloned = cloneState(game);
         const pl = cloned.players[p];
         pl.row = act.target.row; pl.col = act.target.col;
-        const dir = act.dir;
-        const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-        const dr = {top:-1, bottom:1, left:0, right:0}[dir];
-        const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-        const oppR = pl.row + dr, oppC = pl.col + dc;
-        cloned.board[pl.row][pl.col].walls[dir] = true;
-        if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
+        applyWall(cloned, pl.row, pl.col, act.dir);
         const [s0, s1, sep] = computeRegionsFromState(cloned);
         if (sep) {
             const score = (p === 0) ? (s0 - s1) : (s1 - s0);
@@ -804,16 +885,25 @@ function emergencyTrap(start, oppStart, actions, p) {
     return path ? { moves: path.slice(1), wallDir: best.dir } : null;
 }
 
+// 辅助：快速放墙
+function applyWall(state, r, c, dir) {
+    const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
+    const dr = {top:-1, bottom:1, left:0, right:0}[dir];
+    const dc = {top:0, bottom:0, left:-1, right:1}[dir];
+    const oppR = r + dr, oppC = c + dc;
+    state.board[r][c].walls[dir] = true;
+    if (isInBounds(oppR, oppC)) state.board[oppR][oppC].walls[oppDir] = true;
+}
+
 function oppSearch(state, depth, maxPlayer, alpha) {
     const p = 1 - maxPlayer, opp = maxPlayer;
     const start = { row: state.players[p].row, col: state.players[p].col };
     const reachable = [];
-    const visited = new Set();
+    const visited = new Set([start.row+','+start.col]);
     const queue = [{ row: start.row, col: start.col, steps: 0 }];
-    visited.add(start.row+','+start.col);
     while (queue.length > 0) {
         const cur = queue.shift();
-        reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
+        reachable.push({ row: cur.row, col: cur.col });
         if (cur.steps >= 3) continue;
         for (const nb of getNeighborsFromState(state, cur.row, cur.col)) {
             const key = nb.row+','+nb.col;
@@ -823,8 +913,8 @@ function oppSearch(state, depth, maxPlayer, alpha) {
         }
     }
     const wallDirs = ['top','right','bottom','left'];
-    let bestScore = Infinity;
     const actions = [];
+    const seen = new Set();
     for (const target of reachable) {
         for (const dir of wallDirs) {
             if (state.board[target.row][target.col].walls[dir]) continue;
@@ -832,29 +922,27 @@ function oppSearch(state, depth, maxPlayer, alpha) {
             const dr = {top:-1, bottom:1, left:0, right:0}[dir];
             const dc = {top:0, bottom:0, left:-1, right:1}[dir];
             const oppR = target.row + dr, oppC = target.col + dc;
-            if (!isInBounds(oppR, oppC)) continue;
-            if (state.board[oppR][oppC].walls[oppDir]) continue;
+            if (!isInBounds(oppR, oppC) || state.board[oppR][oppC].walls[oppDir]) continue;
+            const wk = target.row+','+target.col+','+dir;
+            if (seen.has(wk)) continue; seen.add(wk);
             actions.push({ target, dir });
         }
     }
-    for (const act of actions) {
+    let bestScore = Infinity;
+    // 快速预排序
+    const scored = actions.map(act => {
         const cloned = cloneState(state);
-        const pl = cloned.players[p];
-        pl.row = act.target.row; pl.col = act.target.col;
-        const dir = act.dir;
-        const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-        const dr = {top:-1, bottom:1, left:0, right:0}[dir];
-        const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-        const oppR = pl.row + dr, oppC = pl.col + dc;
-        cloned.board[pl.row][pl.col].walls[dir] = true;
-        if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-        act._score = evaluateStateCached(cloned, maxPlayer);
-        act._cloned = cloned;
-    }
-    actions.sort((a,b) => a._score - b._score);
+        cloned.players[p].row = act.target.row; cloned.players[p].row = act.target.row;
+        cloned.players[p].col = act.target.col;
+        applyWall(cloned, act.target.row, act.target.col, act.dir);
+        const s = evaluateStateLight(cloned, maxPlayer);
+        return { act, cloned, s };
+    });
+    scored.sort((a,b) => a.s - b.s);
+    const cap = scored.length <= 20 ? scored.length : (scored.length <= 40 ? 18 : 14);
     let beta = Infinity;
-    for (const act of actions) {
-        const cloned = act._cloned;
+    for (let i = 0; i < cap; i++) {
+        const { act, cloned, s } = scored[i];
         const [s0, s1, sep] = computeRegionsFromState(cloned);
         if (sep) {
             const score = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
@@ -864,7 +952,7 @@ function oppSearch(state, depth, maxPlayer, alpha) {
             continue;
         }
         if (depth <= 1) {
-            const score = evaluateStateCached(cloned, maxPlayer);
+            const score = evaluateStateLight(cloned, maxPlayer);
             if (score < bestScore) bestScore = score;
             if (bestScore < alpha) return bestScore;
             if (bestScore < beta) beta = bestScore;
@@ -882,12 +970,11 @@ function maxSearch(state, depth, maxPlayer, beta) {
     const p = maxPlayer, opp = 1 - p;
     const start = { row: state.players[p].row, col: state.players[p].col };
     const reachable = [];
-    const visited = new Set();
+    const visited = new Set([start.row+','+start.col]);
     const queue = [{ row: start.row, col: start.col, steps: 0 }];
-    visited.add(start.row+','+start.col);
     while (queue.length > 0) {
         const cur = queue.shift();
-        reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
+        reachable.push({ row: cur.row, col: cur.col });
         if (cur.steps >= 3) continue;
         for (const nb of getNeighborsFromState(state, cur.row, cur.col)) {
             const key = nb.row+','+nb.col;
@@ -899,6 +986,7 @@ function maxSearch(state, depth, maxPlayer, beta) {
     const wallDirs = ['top','right','bottom','left'];
     let bestScore = -Infinity;
     const actions = [];
+    const seen = new Set();
     for (const target of reachable) {
         for (const dir of wallDirs) {
             if (state.board[target.row][target.col].walls[dir]) continue;
@@ -906,29 +994,25 @@ function maxSearch(state, depth, maxPlayer, beta) {
             const dr = {top:-1, bottom:1, left:0, right:0}[dir];
             const dc = {top:0, bottom:0, left:-1, right:1}[dir];
             const oppR = target.row + dr, oppC = target.col + dc;
-            if (!isInBounds(oppR, oppC)) continue;
-            if (state.board[oppR][oppC].walls[oppDir]) continue;
+            if (!isInBounds(oppR, oppC) || state.board[oppR][oppC].walls[oppDir]) continue;
+            const wk = target.row+','+target.col+','+dir;
+            if (seen.has(wk)) continue; seen.add(wk);
             actions.push({ target, dir });
         }
     }
-    for (const act of actions) {
+    const scored = actions.map(act => {
         const cloned = cloneState(state);
-        const pl = cloned.players[p];
-        pl.row = act.target.row; pl.col = act.target.col;
-        const dir = act.dir;
-        const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-        const dr = {top:-1, bottom:1, left:0, right:0}[dir];
-        const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-        const oppR = pl.row + dr, oppC = pl.col + dc;
-        cloned.board[pl.row][pl.col].walls[dir] = true;
-        if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-        act._score = evaluateStateCached(cloned, maxPlayer);
-        act._cloned = cloned;
-    }
-    actions.sort((a,b) => b._score - a._score);
+        cloned.players[p].row = act.target.row;
+        cloned.players[p].col = act.target.col;
+        applyWall(cloned, act.target.row, act.target.col, act.dir);
+        const s = evaluateStateLight(cloned, maxPlayer);
+        return { act, cloned, s };
+    });
+    scored.sort((a,b) => b.s - a.s);
+    const cap = scored.length <= 20 ? scored.length : (scored.length <= 40 ? 18 : 14);
     let alpha = -Infinity;
-    for (const act of actions) {
-        const cloned = act._cloned;
+    for (let i = 0; i < cap; i++) {
+        const { act, cloned } = scored[i];
         const [s0, s1, sep] = computeRegionsFromState(cloned);
         if (sep) {
             const score = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
@@ -938,7 +1022,7 @@ function maxSearch(state, depth, maxPlayer, beta) {
             continue;
         }
         if (depth <= 1) {
-            const score = evaluateStateCached(cloned, maxPlayer);
+            const score = evaluateStateLight(cloned, maxPlayer);
             if (score > bestScore) bestScore = score;
             if (bestScore > beta) return bestScore;
             if (bestScore > alpha) alpha = bestScore;
@@ -952,6 +1036,27 @@ function maxSearch(state, depth, maxPlayer, beta) {
     return bestScore;
 }
 
+// 检测"唯一非死路"：若去掉所有死路后只剩一条可行路径，返回该方向目标格
+function findUniqueOpenPath(state, p) {
+    const pl = state.players[p], oppPl = state.players[1-p];
+    const nbs = getNeighborsFromState(state, pl.row, pl.col)
+        .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col));
+    if (nbs.length === 0) return null;
+    // 对每个邻居判断：去掉它后自己是否变成孤立（自己那侧区域是否因此收缩到 ≤ myArea/2）
+    const myArea = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 49);
+    const openNbs = nbs.filter(nb => {
+        // 若把该格视为"移走对手"区域：只是粗判连通性不变
+        // 用更简单方法：BFS 从 pl 出发，不经过 nb，看能到达的格子数
+        const areaWithout = bfsReachCount(state, pl.row, pl.col, nb.row, nb.col, 49);
+        // 若绕过 nb 仍能到达原区域大部分 => nb 不是必经通道 => 不算死路
+        // 若绕过后面积大幅减少 => nb 是必经口
+        return areaWithout >= myArea * 0.7;
+    });
+    // 如果只有一个"开放"邻居方向
+    if (openNbs.length === 1) return openNbs[0];
+    return null;
+}
+
 function aiSearch(depth) {
     const p = game.currentPlayer;
     const opp = 1 - p;
@@ -959,9 +1064,8 @@ function aiSearch(depth) {
     const oppStart = { row: game.players[opp].row, col: game.players[opp].col };
 
     const reachable = [];
-    const visited = new Set();
+    const visited = new Set([start.row * BOARD_SIZE + start.col]);
     const queue = [{ row: start.row, col: start.col, steps: 0 }];
-    visited.add(start.row * BOARD_SIZE + start.col);
     while (queue.length > 0) {
         const cur = queue.shift();
         reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
@@ -983,8 +1087,7 @@ function aiSearch(depth) {
             const dr = {top:-1, bottom:1, left:0, right:0}[dir];
             const dc = {top:0, bottom:0, left:-1, right:1}[dir];
             const oppR = target.row + dr, oppC = target.col + dc;
-            if (!isInBounds(oppR, oppC)) continue;
-            if (game.board[oppR][oppC].walls[oppDir]) continue;
+            if (!isInBounds(oppR, oppC) || game.board[oppR][oppC].walls[oppDir]) continue;
             const wallKey = target.row+','+target.col+','+dir;
             if (wallPlaced.has(wallKey)) continue;
             wallPlaced.add(wallKey);
@@ -993,54 +1096,90 @@ function aiSearch(depth) {
     }
     if (actions.length === 0) return null;
 
-    const myFullReach = bfsReachCount(game, start.row, start.col, oppStart.row, oppStart.col, 49);
-    const oppFullReach = bfsReachCount(game, oppStart.row, oppStart.col, start.row, start.col, 49);
     const myReach3 = bfsReachCount(game, start.row, start.col, oppStart.row, oppStart.col, 3);
     const oppReach3 = bfsReachCount(game, oppStart.row, oppStart.col, start.row, start.col, 3);
 
+    // 前期（第1-2回合）极速模式：仅保留最多8个走法
+    const isEarlyGame = game.turnCount <= 2;
+
+    // 紧急模式检测（需要全局BFS时才算）
+    const myFullReach = bfsReachCount(game, start.row, start.col, oppStart.row, oppStart.col, 49);
+    const oppFullReach = bfsReachCount(game, oppStart.row, oppStart.col, start.row, start.col, 49);
+
     if (myFullReach <= 10) return emergencyEscape(start, oppStart, actions, p);
     if (oppReach3 <= 5) return emergencyTrap(start, oppStart, actions, p);
+
+    // 唯一通路：快速冲向那个方向
+    if (!isEarlyGame) {
+        const openPath = findUniqueOpenPath(game, p);
+        if (openPath) {
+            // 找所有朝 openPath 方向移动的 actions
+            const distTarget = Math.abs(openPath.row - oppStart.row) + Math.abs(openPath.col - oppStart.col);
+            const urgentActions = actions.filter(a => {
+                const d = Math.abs(a.target.row - oppStart.row) + Math.abs(a.target.col - oppStart.col);
+                return d < distTarget + 3; // 朝那个方向移动
+            });
+            if (urgentActions.length > 0 && urgentActions.length < actions.length * 0.4) {
+                // 只深搜这批
+                return runSearch(urgentActions, depth, p, start, oppStart, false);
+            }
+        }
+    }
 
     let searchDepth = depth;
     if (actions.length <= 12) searchDepth = Math.min(depth + 1, 5);
     else if (actions.length >= 60) searchDepth = Math.max(depth - 1, 3);
 
+    // 快速预评分 + 墙安全检测（防封自己）
     for (const act of actions) {
         const cloned = cloneState(game);
         const pl = cloned.players[p];
         pl.row = act.target.row; pl.col = act.target.col;
-        const dir = act.dir;
-        const oppDir2 = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-        const dr = {top:-1, bottom:1, left:0, right:0}[dir];
-        const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-        const oppR = pl.row + dr, oppC = pl.col + dc;
-        cloned.board[pl.row][pl.col].walls[dir] = true;
-        if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir2] = true;
-        act._score = evaluateStateCached(cloned, p) + act.moveSteps * 30;
+        applyWall(cloned, pl.row, pl.col, act.dir);
+        // 检查放墙后自己区域是否缩小（墙封自己惩罚）
+        const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, cloned.players[opp].row, cloned.players[opp].col, 49);
+        const selfBlockPenalty = myAreaAfter < myFullReach ? (myFullReach - myAreaAfter) * 25 : 0;
+        act._score = evaluateStateCached(cloned, p) + act.moveSteps * 30 - selfBlockPenalty;
         act._cloned = cloned;
     }
     actions.sort((a, b) => b._score - a._score);
 
-    const maxCandidates = actions.length <= 20 ? actions.length : (actions.length <= 40 ? 20 : 16);
+    // 前期极速：大幅截断候选
+    let maxCandidates;
+    if (isEarlyGame) {
+        maxCandidates = 6; // 第1-2回合只搜6个
+    } else if (actions.length <= 20) {
+        maxCandidates = actions.length;
+    } else if (actions.length <= 40) {
+        maxCandidates = 18;
+    } else {
+        maxCandidates = 14;
+    }
     const candidates = actions.slice(0, maxCandidates);
 
+    return runSearch(candidates, searchDepth, p, start, oppStart, true);
+}
+
+function runSearch(candidates, searchDepth, p, start, oppStart, sendProgress) {
     let bestScore = -Infinity;
     let bestAction = null;
+    const total = candidates.length;
 
-    for (const act of candidates) {
-        const cloned = act._cloned;
+    for (let ci = 0; ci < total; ci++) {
+        const act = candidates[ci];
+        const cloned = act._cloned || (() => {
+            const c = cloneState(game);
+            c.players[p].row = act.target.row; c.players[p].col = act.target.col;
+            applyWall(c, act.target.row, act.target.col, act.dir);
+            return c;
+        })();
         const path = findShortestPath(start, act.target, p, cloned);
         if (!path) continue;
         const [s0, s1, sep] = computeRegionsFromState(cloned);
         if (sep) {
             const score = (p === 0) ? (s0 - s1) : (s1 - s0);
-            const isLoss = score < 0;
-            if (isLoss) {
-                if (bestAction === null || score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
-            } else {
-                if (score > 0) return { moves: path.slice(1), wallDir: act.dir };
-                if (score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
-            }
+            if (score > 0) return { moves: path.slice(1), wallDir: act.dir };
+            if (score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
             continue;
         }
         if (searchDepth > 2) {
@@ -1049,6 +1188,11 @@ function aiSearch(depth) {
         } else {
             const score = evaluateStateCached(cloned, p);
             if (score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
+        }
+
+        // 每处理完一个候选后发送进度
+        if (sendProgress) {
+            self.postMessage({ type: 'progress', value: (ci + 1) / total });
         }
     }
     return bestAction;
@@ -1060,7 +1204,7 @@ self.onmessage = function(e) {
     evalCache = new Map();
     mandatoryCache = new Map();
     const result = aiSearch(depth);
-    self.postMessage(result);
+    self.postMessage({ type: 'result', value: result });
 };
 `;
         const blob = new Blob([workerSrc], { type: 'application/javascript' });
@@ -1091,6 +1235,9 @@ self.onmessage = function(e) {
         pve: { wins: 0, losses: 0, draws: 0 },
         p2p: { wins: 0, losses: 0, draws: 0 }
     };
+
+    // 难度：'expert'=搜索深度3, 'master'=搜索深度4
+    let aiDifficulty = 'expert';
 
     // ---- DOM ----
     const canvas = document.getElementById('boardCanvas');
@@ -1702,6 +1849,20 @@ self.onmessage = function(e) {
     }
 
     // ---- AI ----
+    const aiProgressBar = document.getElementById('aiProgressBar');
+    const aiProgressFill = document.getElementById('aiProgressFill');
+
+    function setAIProgress(value) {
+        if (!aiProgressBar) return;
+        if (value === null) {
+            aiProgressBar.style.display = 'none';
+            aiProgressFill.style.width = '0%';
+        } else {
+            aiProgressBar.style.display = 'block';
+            aiProgressFill.style.width = Math.round(value * 100) + '%';
+        }
+    }
+
     function aiTurn() {
         if (game.gameOver || game.aiThinking) return;
         game.aiThinking = true;
@@ -1709,9 +1870,10 @@ self.onmessage = function(e) {
         statusMessage.textContent = '🤔 AI 思考中...';
         updateUI();
         drawBoard();
+        setAIProgress(0.02);
 
         const worker = getAIWorker();
-        // Serialize only what the worker needs
+        const searchDepth = (aiDifficulty === 'expert') ? 3 : 4;
         const stateCopy = JSON.parse(JSON.stringify({
             board: game.board,
             players: game.players,
@@ -1728,7 +1890,15 @@ self.onmessage = function(e) {
         }));
 
         worker.onmessage = function(e) {
-            const bestAction = e.data;
+            const msg = e.data;
+            // 处理进度更新
+            if (msg && msg.type === 'progress') {
+                setAIProgress(msg.value);
+                return;
+            }
+            // 处理结果
+            setAIProgress(null);
+            const bestAction = (msg && msg.type === 'result') ? msg.value : msg;
             if (!bestAction) {
                 game.aiThinking = false;
                 endTurn();
@@ -1788,7 +1958,7 @@ self.onmessage = function(e) {
             endTurn();
         };
 
-        worker.postMessage({ state: stateCopy, depth: 4 });
+        worker.postMessage({ state: stateCopy, depth: searchDepth });
     }
 
     // ---- WebSocket 联机 ----
@@ -2171,11 +2341,26 @@ self.onmessage = function(e) {
     }
 
     // ---- 模式选择 ----
+    // ---- 难度选择 ----
+    const aiControlBar = document.getElementById('aiControlBar');
+    const diffBtns = document.querySelectorAll('.diff-btn');
+    function updateAIControlVisibility() {
+        if (aiControlBar) aiControlBar.style.display = (game.mode === 'pve') ? 'flex' : 'none';
+    }
+    diffBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            diffBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            aiDifficulty = btn.dataset.diff;
+        });
+    });
+
     modeBtns.forEach(btn => {
         btn.addEventListener('click', () => {
             modeBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             game.mode = btn.dataset.mode;
+            updateAIControlVisibility();
             if (game.mode === 'p2p') {
                 p2pRoomPanel.style.display = 'flex';
                 wsConnect(SERVER_URL);
@@ -2190,6 +2375,7 @@ self.onmessage = function(e) {
             }
         });
     });
+    updateAIControlVisibility();
 
     restartBtn.addEventListener('click', () => {
         if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
