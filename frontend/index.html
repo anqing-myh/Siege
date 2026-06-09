@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.2.2 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.2.3 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -1009,8 +1009,8 @@ function aiSearch(depth) {
         pl.row = act.target.row; pl.col = act.target.col;
         applyWall(cloned, pl.row, pl.col, act.dir);
         const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, cloned.players[opp].row, cloned.players[opp].col, 49);
-        if (myAreaAfter <= 3) {
-            act._score = -9999 + myAreaAfter * 100;
+        if (myAreaAfter <= 6) {
+            act._score = -9999 + myAreaAfter * 200;
             act._cloned = cloned;
             continue;
         }
@@ -1259,8 +1259,8 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
         }
         const myAreaNow = bfsReachCount(cloned, act.target.row, act.target.col,
             cloned.players[1-p].row, cloned.players[1-p].col, 49);
-        if (myAreaNow <= 3) {
-            results.push({ path, score: -5000 + myAreaNow * 100, suicide: true });
+        if (myAreaNow <= 6) {
+            results.push({ path, score: -5000 + myAreaNow * 200, suicide: true });
             if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
             continue;
         }
@@ -1281,6 +1281,21 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
     // 所有候选中对手能造成的最大 AI 面积（用于判断威胁是否可规避）
     const bestMinAIArea = validResults.reduce((m, r) => Math.max(m, r.minAIArea || 49), 0);
 
+    // 先确定非自杀候选的最佳分，suicide 只在完全没有更好选择时才用
+    let nonSuicideBest = -Infinity;
+    for (let ci = 0; ci < total; ci++) {
+        const r = results[ci];
+        if (!r || r.immediate || r.suicide) continue;
+        let score = r.score;
+        if (r.oppCanWin && !allLeadToOppWin) {
+            score = -4000 + r.score * 0.01;
+        } else if (r.minAIArea !== undefined && r.minAIArea <= 8 && bestMinAIArea > 8) {
+            const penalty = r.minAIArea <= 3 ? 3500 : r.minAIArea <= 6 ? 2500 : 1500;
+            score = -penalty + r.score * 0.01;
+        }
+        if (score > nonSuicideBest) nonSuicideBest = score;
+    }
+
     for (let ci = 0; ci < total; ci++) {
         const r = results[ci];
         if (!r) continue;
@@ -1290,13 +1305,15 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
             if (r.score > bestScore) { bestScore = r.score; bestAction = { moves: r.path.slice(1), wallDir: act.dir }; }
             continue;
         }
-        let score = r.score;
-        if (!r.suicide) {
+        let score;
+        if (r.suicide) {
+            // 自杀候选分数强制低于所有非自杀候选，只在别无选择时采用
+            score = -9000 + r.score * 0.001;
+        } else {
+            score = r.score;
             if (r.oppCanWin && !allLeadToOppWin) {
-                // 对手能立刻赢，且存在不被赢的选择 → 极低分
                 score = -4000 + r.score * 0.01;
             } else if (r.minAIArea !== undefined && r.minAIArea <= 8 && bestMinAIArea > 8) {
-                // 对手能把 AI 圈到 ≤8 格，且存在安全选择 → 重惩罚，按威胁程度分级
                 const penalty = r.minAIArea <= 3 ? 3500 : r.minAIArea <= 6 ? 2500 : 1500;
                 score = -penalty + r.score * 0.01;
             }
