@@ -1124,26 +1124,27 @@
             const p = game.currentPlayer;
             const opp = 1 - p;
             const start = { row: game.players[p].row, col: game.players[p].col };
+            const oppStart = { row: game.players[opp].row, col: game.players[opp].col };
+
+            // ---- 枚举可达格 ----
             const reachable = [];
             const visited = new Set();
             const queue = [{ row: start.row, col: start.col, steps: 0 }];
-            visited.add(`${start.row},${start.col}`);
+            visited.add(start.row * BOARD_SIZE + start.col);
             while (queue.length > 0) {
                 const cur = queue.shift();
                 reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
                 if (cur.steps >= 3) continue;
-                const neighbors = getNeighbors(cur.row, cur.col);
-                for (const nb of neighbors) {
-                    const key = `${nb.row},${nb.col}`;
-                    if (!visited.has(key) && !(nb.row === game.players[opp].row && nb.col === game.players[opp].col)) {
-                        visited.add(key);
-                        queue.push({ row: nb.row, col: nb.col, steps: cur.steps + 1 });
-                    }
+                for (const nb of getNeighbors(cur.row, cur.col)) {
+                    if (nb.row === oppStart.row && nb.col === oppStart.col) continue;
+                    const k = nb.row * BOARD_SIZE + nb.col;
+                    if (!visited.has(k)) { visited.add(k); queue.push({ row: nb.row, col: nb.col, steps: cur.steps + 1 }); }
                 }
             }
+
+            // ---- 枚举 actions，过滤重复落墙位置（同格同方向只保留一次）----
             const wallDirs = ['top','right','bottom','left'];
-            let bestScore = -Infinity;
-            let bestAction = null;
+            const wallPlaced = new Set(); // "r,c,dir" 去重
             const actions = [];
             for (const target of reachable) {
                 for (const dir of wallDirs) {
@@ -1154,15 +1155,98 @@
                     const oppR = target.row + dr, oppC = target.col + dc;
                     if (!isInBounds(oppR, oppC)) continue;
                     if (game.board[oppR][oppC].walls[oppDir]) continue;
+                    // 去重：同一个格子同一方向的墙，不同移动路径等价
+                    const wallKey = `${target.row},${target.col},${dir}`;
+                    if (wallPlaced.has(wallKey)) continue;
+                    wallPlaced.add(wallKey);
                     actions.push({ target, dir, moveSteps: target.steps });
                 }
             }
             if (actions.length === 0) return null;
+
+            // ---- 局面阶段判断 ----
+            const myFullReach = bfsReachCount(game, start.row, start.col, oppStart.row, oppStart.col, 49);
+            const oppFullReach = bfsReachCount(game, oppStart.row, oppStart.col, start.row, start.col, 49);
+            const myReach3 = bfsReachCount(game, start.row, start.col, oppStart.row, oppStart.col, 3);
+            const oppReach3 = bfsReachCount(game, oppStart.row, oppStart.col, start.row, start.col, 3);
+
+            // ---- 紧急模式1：自己被困（全局可达≤10格），优先逃向开阔方向 ----
+            if (myFullReach <= 10) {
+                return emergencyEscape(start, oppStart, actions, p);
+            }
+
+            // ---- 紧急模式2：对手被困（3步可达≤5格），直接最优封锁 ----
+            if (oppReach3 <= 5) {
+                return emergencyTrap(start, oppStart, actions, p);
+            }
+
+            // ---- 动态搜索深度：根据 actions 数量决定深度 ----
+            // actions 少（后期通道收窄）→ 深搜；actions 多（前期开阔）→ 浅搜节省时间
+            let searchDepth = depth;
+            if (actions.length <= 12) searchDepth = Math.min(depth + 1, 5); // 后期加深一层
+            else if (actions.length >= 60) searchDepth = Math.max(depth - 1, 3); // 前期减浅一层
+
+            // ---- 前期额外剪枝：只保留最优的 N 个走法 ----
+            // 先用快速评估排序，截断长尾
             for (const act of actions) {
                 const cloned = cloneGameState();
                 const pl = cloned.players[p];
-                pl.row = act.target.row;
-                pl.col = act.target.col;
+                pl.row = act.target.row; pl.col = act.target.col;
+                const dir = act.dir;
+                const oppDir2 = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
+                const dr = {top:-1, bottom:1, left:0, right:0}[dir];
+                const dc = {top:0, bottom:0, left:-1, right:1}[dir];
+                const oppR = pl.row + dr, oppC = pl.col + dc;
+                cloned.board[pl.row][pl.col].walls[dir] = true;
+                if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir2] = true;
+                act._score = evaluateStateCached(cloned, p) + act.moveSteps * 30;
+                act._cloned = cloned;
+            }
+            actions.sort((a, b) => b._score - a._score);
+
+            // 前期（actions 多时）截断：只深搜前 K 个候选
+            const maxCandidates = actions.length <= 20 ? actions.length : (actions.length <= 40 ? 20 : 16);
+            const candidates = actions.slice(0, maxCandidates);
+
+            // ---- 主搜索 ----
+            let bestScore = -Infinity;
+            let bestAction = null;
+
+            for (const act of candidates) {
+                const cloned = act._cloned;
+                const path = findShortestPath(start, act.target, p, cloned);
+                if (!path) continue;
+
+                const [s0, s1, sep] = computeRegionsFromState(cloned);
+                if (sep) {
+                    const score = (p === 0) ? (s0 - s1) : (s1 - s0);
+                    const isLoss = score < 0;
+                    if (isLoss) {
+                        if (bestAction === null || score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
+                    } else {
+                        if (score > 0) return { moves: path.slice(1), wallDir: act.dir };
+                        if (score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
+                    }
+                    continue;
+                }
+                if (searchDepth > 2) {
+                    const oppScore = oppSearch(cloned, searchDepth - 1, p, bestScore);
+                    if (oppScore > bestScore) { bestScore = oppScore; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
+                } else {
+                    const score = evaluateStateCached(cloned, p);
+                    if (score > bestScore) { bestScore = score; bestAction = { moves: path.slice(1), wallDir: act.dir }; }
+                }
+            }
+            return bestAction;
+        }
+
+        // 紧急逃脱：自己被困时，选能最大化己方可达格的走法
+        function emergencyEscape(start, oppStart, actions, p) {
+            let best = null, bestScore = -Infinity;
+            for (const act of actions) {
+                const cloned = cloneGameState();
+                const pl = cloned.players[p];
+                pl.row = act.target.row; pl.col = act.target.col;
                 const dir = act.dir;
                 const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
                 const dr = {top:-1, bottom:1, left:0, right:0}[dir];
@@ -1170,55 +1254,54 @@
                 const oppR = pl.row + dr, oppC = pl.col + dc;
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-                // 步数奖励：鼓励充分移动（每多走一步 +30），避免 AI 懒在原地
-                act._score = evaluateStateCached(cloned, p) + act.moveSteps * 30;
-                act._cloned = cloned;
-            }
-            actions.sort((a,b) => b._score - a._score);
-
-            for (const act of actions) {
-                const cloned = act._cloned;
-                const path = findShortestPath(start, act.target, p, cloned);
-                if (!path) continue;
-                
                 const [s0, s1, sep] = computeRegionsFromState(cloned);
                 if (sep) {
                     const score = (p === 0) ? (s0 - s1) : (s1 - s0);
-                    const isLoss = (p === 0) ? (s0 < s1) : (s1 < s0);
-                    if (isLoss) {
-                        // 如果必输，选择让自己领地最大的走法（主动封死自己保更大面积）
-                        if (bestAction === null || score > bestScore) {
-                            bestScore = score;
-                            bestAction = { moves: path.slice(1), wallDir: act.dir };
-                        }
-                    } else {
-                        if (score > 0) {
-                            return { moves: path.slice(1), wallDir: act.dir };
-                        }
-                        if (score > bestScore) {
-                            bestScore = score;
-                            bestAction = { moves: path.slice(1), wallDir: act.dir };
-                        }
-                    }
+                    if (score > bestScore) { bestScore = score; best = act; }
                     continue;
                 }
-                // 深度>2时，完全信赖深层搜索结果
-                if (depth > 2) {
-                    const oppScore = oppSearch(cloned, depth - 1, p, bestScore);
-                    if (oppScore > bestScore) {
-                        bestScore = oppScore;
-                        bestAction = { moves: path.slice(1), wallDir: act.dir };
-                    }
-                } else {
-                    // depth=1时，用纯净的evaluateState评估
-                    const score = evaluateStateCached(cloned, p);
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestAction = { moves: path.slice(1), wallDir: act.dir };
-                    }
-                }
+                const myR = bfsReachCount(cloned, pl.row, pl.col, cloned.players[1-p].row, cloned.players[1-p].col, 49);
+                const sc = myR * 2 + act.moveSteps * 10;
+                if (sc > bestScore) { bestScore = sc; best = act; }
             }
-            return bestAction;
+            if (!best) return null;
+            const path = findShortestPath(start, best.target, p, cloneGameState());
+            return path ? { moves: path.slice(1), wallDir: best.dir } : null;
+        }
+
+        // 紧急封锁：对手被困时，选能最小化对手可达格的走法（最快封死）
+        function emergencyTrap(start, oppStart, actions, p) {
+            let best = null, bestScore = -Infinity;
+            for (const act of actions) {
+                const cloned = cloneGameState();
+                const pl = cloned.players[p];
+                pl.row = act.target.row; pl.col = act.target.col;
+                const dir = act.dir;
+                const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
+                const dr = {top:-1, bottom:1, left:0, right:0}[dir];
+                const dc = {top:0, bottom:0, left:-1, right:1}[dir];
+                const oppR = pl.row + dr, oppC = pl.col + dc;
+                cloned.board[pl.row][pl.col].walls[dir] = true;
+                if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
+                const [s0, s1, sep] = computeRegionsFromState(cloned);
+                if (sep) {
+                    const score = (p === 0) ? (s0 - s1) : (s1 - s0);
+                    if (score > 0) { // 赢了直接返回
+                        const path = findShortestPath(start, act.target, p, cloned);
+                        if (path) return { moves: path.slice(1), wallDir: act.dir };
+                    }
+                    if (score > bestScore) { bestScore = score; best = act; }
+                    continue;
+                }
+                const opp2 = 1 - p;
+                const oppR3 = bfsReachCount(cloned, cloned.players[opp2].row, cloned.players[opp2].col, pl.row, pl.col, 3);
+                const distBonus = -Math.abs(act.target.row - oppStart.row) - Math.abs(act.target.col - oppStart.col);
+                const sc = (10 - oppR3) * 20 + distBonus * 5 + act.moveSteps * 15;
+                if (sc > bestScore) { bestScore = sc; best = act; }
+            }
+            if (!best) return null;
+            const path = findShortestPath(start, best.target, p, cloneGameState());
+            return path ? { moves: path.slice(1), wallDir: best.dir } : null;
         }
 
         // 对手搜索（最小化）
@@ -1405,35 +1488,47 @@
             const oppPl = state.players[opp];
             const mySize = (p === 0) ? s0 : s1;
             const oppSize = (p === 0) ? s1 : s0;
+            const totalCells = BOARD_SIZE * BOARD_SIZE; // 49
 
-            // ---- 1. 核心：BFS 可达格差（最直接的优势指标）----
-            // 我方3步可达格 vs 对手3步可达格
-            const myReach = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 3);
-            const oppReach = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 3);
-            let score = (myReach - oppReach) * 18;
+            // ---- 1. 全局可达格（判断阶段）----
+            const myFullReach = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 49);
+            const oppFullReach = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 49);
+            const myReach3 = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 3);
+            const oppReach3 = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 3);
 
-            // ---- 2. 区域差（已分隔时用于胜负，未分隔时作为长期指标）----
-            score += (mySize - oppSize) * 40;
+            // ---- 2. 核心：可达格差 ----
+            let score = (myReach3 - oppReach3) * 18 + (mySize - oppSize) * 40;
 
-            // ---- 3. 步数充分利用奖励（防止 AI 懒在原地）----
-            // 用我方3步可达数本身作为奖励：可达格越多说明移动越充分
-            score += myReach * 5;
-
-            // ---- 4. 移动力差（直接比较双方灵活性）----
+            // ---- 3. 移动力 ----
             const myMob = countMobility(state, p);
             const oppMob = countMobility(state, opp);
             score += (myMob - oppMob) * 25;
-            // 对手被封锁接近死路
             if (oppMob <= 1) score += (2 - oppMob) * 150;
             if (myMob <= 1) score -= (2 - myMob) * 120;
 
-            // ---- 5. 关键格抢占（mandatory cells，只在中后期开启）----
-            if (game.turnCount >= 8) {
+            // ---- 4. 单通道/紧迫度检测 ----
+            // 通过 AP 数量判断连通性，通道越少局势越紧迫
+            const aps = findArticulationPoints(state);
+            const apCount = aps.length;
+
+            if (apCount <= 2) {
+                // 通道极少：进入紧迫模式
+                // 检测对手是否在单通道对侧（可以快速封锁）
+                const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+                // 鼓励冲向对手（不再保守）
+                score += Math.max(0, 10 - distToOpp) * 20;
+                // 如果对手的全局可达格比己方少，说明对手已经处于劣势区域
+                if (oppFullReach < myFullReach) {
+                    score += (myFullReach - oppFullReach) * 15;
+                }
+            }
+
+            // ---- 5. 关键格抢占（AP 格子）----
+            if (game.turnCount >= 6) {
                 const mandatoryCells = findMandatoryCellsBetweenPlayersCached(state, p);
                 if (mandatoryCells.length > 0) {
-                    const cell = mandatoryCells[0]; // 最近的必经格
+                    const cell = mandatoryCells[0];
                     if (Number.isFinite(cell.distFromAI)) {
-                        // 越近越好，比对手更近额外奖励
                         score += Math.max(0, 10 - cell.distFromAI) * 30;
                         if (cell.distFromOpp > cell.distFromAI) {
                             score += (cell.distFromOpp - cell.distFromAI) * 20;
@@ -1442,15 +1537,30 @@
                 }
             }
 
-            // ---- 6. 接近对手（始终鼓励压缩对手空间）----
-            const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-            if (distToOpp > 0) {
-                // 距离越近越好，但贴脸时轻微惩罚（容易被墙围）
-                score += Math.max(0, 8 - distToOpp) * 10;
-                if (distToOpp === 1) score -= 10;
+            // ---- 6. 防止被困：己方全局可达格比对手少时的危机奖励 ----
+            if (myFullReach < oppFullReach) {
+                // 逃脱方向：尽量向开阔区域移动（用3步可达格数体现）
+                score += myReach3 * 8;
+                // 越被困越要接近对手尝试反扑
+                const distToOpp2 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+                score += Math.max(0, 6 - distToOpp2) * 12;
             }
 
-            // ---- 7. 朝对手方向放墙的奖励（简化版，无需 clone）----
+            // ---- 7. 封锁奖励：对手全局可达格少时加速逼近 ----
+            if (oppFullReach <= 15) {
+                const distToOpp3 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+                score += (15 - oppFullReach) * 20 + Math.max(0, 7 - distToOpp3) * 25;
+            }
+
+            // ---- 8. 步数奖励（鼓励充分移动，已在 aiSearch 排序阶段处理）----
+            score += myReach3 * 5;
+
+            // ---- 9. 关键格抢占后的距离奖励 ----
+            const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+            score += Math.max(0, 8 - distToOpp) * 10;
+            if (distToOpp === 1) score -= 10;
+
+            // ---- 10. 朝对手方向放墙 ----
             const dirToOppR = oppPl.row - pl.row;
             const dirToOppC = oppPl.col - pl.col;
             const primaryDirR = dirToOppR > 0 ? 'bottom' : dirToOppR < 0 ? 'top' : null;
@@ -1460,12 +1570,58 @@
                 if (w === primaryDirR || w === primaryDirC) score += 30;
             }
 
-            // ---- 8. 边缘惩罚（简化）----
+            // ---- 11. 边缘惩罚 ----
             const edgeDist = Math.min(pl.row, BOARD_SIZE - 1 - pl.row, pl.col, BOARD_SIZE - 1 - pl.col);
             if (edgeDist === 0) score -= 40;
             else if (edgeDist === 1) score -= 15;
 
             return score;
+        }
+
+        // Tarjan 关节点算法：返回图中所有关节点（AP）的数组，O(V+E)
+        function findArticulationPoints(state) {
+            const N = BOARD_SIZE * BOARD_SIZE;
+            const disc = new Int16Array(N).fill(-1);
+            const low = new Int16Array(N);
+            const isAP = new Uint8Array(N);
+            let timer = 0;
+            // 找一个有效的起点（任意可通行格）
+            const p0 = state.players[0];
+            const startId = p0.row * BOARD_SIZE + p0.col;
+            const stack = [{ id: startId, parentId: -1, childIdx: 0, childCount: 0, neighbors: null }];
+            disc[startId] = low[startId] = timer++;
+
+            while (stack.length > 0) {
+                const frame = stack[stack.length - 1];
+                if (!frame.neighbors) {
+                    const r = Math.floor(frame.id / BOARD_SIZE), c = frame.id % BOARD_SIZE;
+                    frame.neighbors = getNeighborsFromState(state, r, c).map(nb => nb.row * BOARD_SIZE + nb.col);
+                }
+                let pushed = false;
+                while (frame.childIdx < frame.neighbors.length) {
+                    const nid = frame.neighbors[frame.childIdx++];
+                    if (disc[nid] === -1) {
+                        frame.childCount++;
+                        disc[nid] = low[nid] = timer++;
+                        stack.push({ id: nid, parentId: frame.id, childIdx: 0, childCount: 0, neighbors: null });
+                        pushed = true; break;
+                    } else if (nid !== frame.parentId) {
+                        low[frame.id] = Math.min(low[frame.id], disc[nid]);
+                    }
+                }
+                if (!pushed) {
+                    stack.pop();
+                    if (stack.length > 0) {
+                        const par = stack[stack.length - 1];
+                        low[par.id] = Math.min(low[par.id], low[frame.id]);
+                        if (frame.parentId === -1) { if (frame.childCount > 1) isAP[frame.id] = 1; }
+                        else { if (low[frame.id] >= disc[frame.parentId]) isAP[frame.parentId] = 1; }
+                    }
+                }
+            }
+            const result = [];
+            for (let i = 0; i < N; i++) if (isAP[i]) result.push(i);
+            return result;
         }
 
         // 计算从 (sr,sc) 出发、最多 maxSteps 步内能到达的格子数（排除对手位置）
@@ -1641,87 +1797,25 @@
             return result;
         }
 
-        // Tarjan 关节点算法：O(V+E) 找到必经格（切点），替代原来 O(V×BFS)
+        // Tarjan 关节点算法：O(V+E) 找到必经格（切点），复用 findArticulationPoints
         function findMandatoryCellsBetweenPlayers(state, player) {
             const p = player;
             const opp = 1 - p;
             const pl = state.players[p];
             const oppPl = state.players[opp];
 
-            // 先确认两人连通
             const baseDist = shortestDistanceFromState(state, pl.row, pl.col, oppPl.row, oppPl.col);
             if (baseDist === Infinity) return [];
 
-            // 构建图：节点 id = r*7+c
-            const N = BOARD_SIZE * BOARD_SIZE;
-            const adj = new Array(N).fill(null).map(() => []);
-            for (let r = 0; r < BOARD_SIZE; r++) {
-                for (let c = 0; c < BOARD_SIZE; c++) {
-                    const id = r * BOARD_SIZE + c;
-                    const nbs = getNeighborsFromState(state, r, c);
-                    for (const nb of nbs) {
-                        adj[id].push(nb.row * BOARD_SIZE + nb.col);
-                    }
-                }
-            }
-
-            // Tarjan DFS，从 pl 出发
-            const disc = new Int16Array(N).fill(-1);
-            const low = new Int16Array(N);
-            const isAP = new Uint8Array(N); // articulation points
-            let timer = 0;
+            const apIds = findArticulationPoints(state);
             const startId = pl.row * BOARD_SIZE + pl.col;
-
-            // 迭代式 Tarjan（避免递归栈溢出）
-            const stack = [{ id: startId, parentId: -1, childIdx: 0, childCount: 0 }];
-            disc[startId] = low[startId] = timer++;
-
-            while (stack.length > 0) {
-                const frame = stack[stack.length - 1];
-                const { id, parentId } = frame;
-                const neighbors = adj[id];
-                let pushed = false;
-
-                while (frame.childIdx < neighbors.length) {
-                    const nid = neighbors[frame.childIdx];
-                    frame.childIdx++;
-                    if (disc[nid] === -1) {
-                        frame.childCount++;
-                        disc[nid] = low[nid] = timer++;
-                        stack.push({ id: nid, parentId: id, childIdx: 0, childCount: 0 });
-                        pushed = true;
-                        break;
-                    } else if (nid !== parentId) {
-                        low[id] = Math.min(low[id], disc[nid]);
-                    }
-                }
-
-                if (!pushed) {
-                    stack.pop();
-                    if (stack.length > 0) {
-                        const parent = stack[stack.length - 1];
-                        low[parent.id] = Math.min(low[parent.id], low[id]);
-                        // AP 判定
-                        if (parentId === -1) {
-                            if (frame.childCount > 1) isAP[id] = 1;
-                        } else {
-                            if (low[id] >= disc[parentId]) isAP[parentId] = 1;
-                        }
-                    }
-                }
-            }
-
-            // 关节点 + 在 pl→oppPl 路径上 = mandatory cell
             const targetId = oppPl.row * BOARD_SIZE + oppPl.col;
             const result = [];
 
-            for (let id = 0; id < N; id++) {
-                if (disc[id] === -1) continue; // 不可达
+            for (const id of apIds) {
                 if (id === startId || id === targetId) continue;
-                if (!isAP[id]) continue;
                 const r = Math.floor(id / BOARD_SIZE);
                 const c = id % BOARD_SIZE;
-                // 确认移除该点后 pl 和 oppPl 不连通
                 const blockedKey = `${r},${c}`;
                 const stillConnected = isConnectedWithoutCell(state, pl.row, pl.col, oppPl.row, oppPl.col, blockedKey);
                 if (!stillConnected) {
