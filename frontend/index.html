@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.2.1 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.2.0 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -895,6 +895,7 @@ function applyWall(state, r, c, dir) {
 }
 
 // 检测对手下一步能造成的最坏情况：{ canWin, minAIArea }
+// canWin: 对手能否立刻赢；minAIArea: 对手所有动作中 AI 剩余最小可达面积
 function assessOpponentThreats(state, aiPlayer) {
     const opp = 1 - aiPlayer;
     const oppPl = state.players[opp];
@@ -919,36 +920,22 @@ function assessOpponentThreats(state, aiPlayer) {
         for (const dir of wallDirs) {
             if (state.board[target.row][target.col].walls[dir]) continue;
             const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-            const dr2 = {top:-1, bottom:1, left:0, right:0}[dir];
-            const dc2 = {top:0, bottom:0, left:-1, right:1}[dir];
-            const oppR = target.row + dr2, oppC = target.col + dc2;
+            const dr = {top:-1, bottom:1, left:0, right:0}[dir];
+            const dc = {top:0, bottom:0, left:-1, right:1}[dir];
+            const oppR = target.row + dr, oppC = target.col + dc;
             if (!isInBounds(oppR, oppC) || state.board[oppR][oppC].walls[oppDir]) continue;
-            // 临时应用墙（不克隆，操作后还原）
-            state.board[target.row][target.col].walls[dir] = true;
-            if (isInBounds(oppR, oppC)) state.board[oppR][oppC].walls[oppDir] = true;
-            const savedOppRow = state.players[opp].row, savedOppCol = state.players[opp].col;
-            state.players[opp].row = target.row; state.players[opp].col = target.col;
-            // 快速检测分割
-            const [s0, s1, sep] = computeRegionsFromState(state);
+            const cloned = cloneState(state);
+            cloned.players[opp].row = target.row; cloned.players[opp].col = target.col;
+            applyWall(cloned, target.row, target.col, dir);
+            const [s0, s1, sep] = computeRegionsFromState(cloned);
             if (sep) {
                 const score = (opp === 0) ? (s0 - s1) : (s1 - s0);
-                if (score > 0) {
-                    // 还原后返回
-                    state.board[target.row][target.col].walls[dir] = false;
-                    if (isInBounds(oppR, oppC)) state.board[oppR][oppC].walls[oppDir] = false;
-                    state.players[opp].row = savedOppRow; state.players[opp].col = savedOppCol;
-                    return { canWin: true, minAIArea: 0 };
-                }
+                if (score > 0) { canWin = true; minAIArea = 0; return { canWin, minAIArea }; }
                 minAIArea = 0;
             } else {
-                // 限制 BFS 上限为 12，够检测危险就行
-                const aiArea = bfsReachCount(state, aiPl.row, aiPl.col, target.row, target.col, 12);
+                const aiArea = bfsReachCount(cloned, aiPl.row, aiPl.col, target.row, target.col, 49);
                 if (aiArea < minAIArea) minAIArea = aiArea;
             }
-            // 还原
-            state.board[target.row][target.col].walls[dir] = false;
-            if (isInBounds(oppR, oppC)) state.board[oppR][oppC].walls[oppDir] = false;
-            state.players[opp].row = savedOppRow; state.players[opp].col = savedOppCol;
         }
     }
     return { canWin, minAIArea };
