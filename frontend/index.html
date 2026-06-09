@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.2.5 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.2.7 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -998,8 +998,8 @@ function oppSearch(state, depth, maxPlayer, alpha) {
     });
     scored.sort((a, b) => a.s - b.s);
     const cap = scored.length <= 16 ? scored.length
-              : scored.length <= 32 ? Math.min(scored.length, 24)
-              : Math.min(scored.length, 18);
+              : scored.length <= 32 ? Math.min(scored.length, 20)
+              : Math.min(scored.length, 14);
     let beta = Infinity;
     for (let i = 0; i < cap; i++) {
         const { cloned } = scored[i];
@@ -1063,8 +1063,8 @@ function maxSearch(state, depth, maxPlayer, beta) {
     });
     scored.sort((a, b) => b.s - a.s);
     const cap = scored.length <= 16 ? scored.length
-              : scored.length <= 32 ? Math.min(scored.length, 24)
-              : Math.min(scored.length, 18);
+              : scored.length <= 32 ? Math.min(scored.length, 20)
+              : Math.min(scored.length, 14);
     let alpha = -Infinity;
     for (let i = 0; i < cap; i++) {
         const { cloned } = scored[i];
@@ -1203,27 +1203,29 @@ function aiSearch(depth) {
         }
     }
 
-    // 动态搜索深度（后期阈值前移：≤16极后期，≤32后期）
+    // 动态搜索深度
     let searchDepth = depth;
-    if (actions.length <= 16)      searchDepth = Math.min(depth + 2, 6); // 极后期+2
-    else if (actions.length <= 32) searchDepth = Math.min(depth + 1, 5); // 后期+1
+    if (actions.length <= 16)      searchDepth = Math.min(depth + 1, 5); // 极后期+1（原+2，过深）
     else if (actions.length >= 60) searchDepth = Math.max(depth - 1, 3); // 前期-1
+    // actions 17-59：保持原始深度，不加不减
 
-    // 候选数：后期加大
+    // 候选数
     let maxCandidates;
     if (isEarlyGame) {
-        maxCandidates = 6;
+        maxCandidates = 12;                        // 开局从6→12，保留更多选项
     } else if (actions.length <= 16) {
-        maxCandidates = actions.length;       // 极后期全搜
+        maxCandidates = actions.length;            // 极后期全搜
     } else if (actions.length <= 32) {
-        maxCandidates = actions.length;       // 后期全搜
-    } else if (actions.length <= 40) {
-        maxCandidates = depth >= 4 ? 20 : 16; // 大师多搜
+        maxCandidates = Math.min(actions.length, depth >= 4 ? 24 : 20); // 后期适当限制
+    } else if (actions.length <= 50) {
+        maxCandidates = depth >= 4 ? 18 : 14;     // 中期
     } else {
-        maxCandidates = depth >= 4 ? 18 : 14;
+        maxCandidates = depth >= 4 ? 14 : 10;     // 前期候选已经够用
     }
 
     // 预评分：加入必经第一步奖励 + 封自己惩罚
+    // 前期动作多，用轻量评估；中后期动作少，用完整评估
+    const useFullEval = actions.length <= 40;
     for (const act of actions) {
         const cloned = cloneState(game);
         const pl = cloned.players[p];
@@ -1242,7 +1244,8 @@ function aiSearch(depth) {
             const distStartToForced = Math.abs(start.row - forcedStep.row) + Math.abs(start.col - forcedStep.col);
             if (distActToForced < distStartToForced) forcedBonus = 80;
         }
-        act._score = evaluateStateCached(cloned, p) + act.moveSteps * 30 - selfBlockPenalty + forcedBonus;
+        const evalScore = useFullEval ? evaluateStateCached(cloned, p) : evaluateStateLight(cloned, p);
+        act._score = evalScore + act.moveSteps * 30 - selfBlockPenalty + forcedBonus;
         act._cloned = cloned;
     }
     actions.sort((a, b) => b._score - a._score);
