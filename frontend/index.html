@@ -465,26 +465,22 @@
         return false;
     }
 
+    // 快速状态 key：编码为 Uint8Array 然后转 base64
+    // 格式：[maxPlayer, p0r, p0c, p1r, p1c, 49 个 wall mask] = 54 字节
     function getStateKey(state, maxPlayer) {
-        let parts = [];
-
-        parts.push(maxPlayer);
-        parts.push(state.players[0].row, state.players[0].col);
-        parts.push(state.players[1].row, state.players[1].col);
-
+        const buf = new Uint8Array(54);
+        buf[0] = maxPlayer;
+        buf[1] = state.players[0].row; buf[2] = state.players[0].col;
+        buf[3] = state.players[1].row; buf[4] = state.players[1].col;
+        let i = 5;
         for (let r = 0; r < BOARD_SIZE; r++) {
             for (let c = 0; c < BOARD_SIZE; c++) {
                 const w = state.board[r][c].walls;
-                let mask = 0;
-                if (w.top) mask |= 1;
-                if (w.right) mask |= 2;
-                if (w.bottom) mask |= 4;
-                if (w.left) mask |= 8;
-                parts.push(mask);
+                buf[i++] = (w.top ? 1 : 0) | (w.right ? 2 : 0) | (w.bottom ? 4 : 0) | (w.left ? 8 : 0);
             }
         }
-
-        return parts.join(',');
+        // 转成普通字符串作为 Map key（比 join 快）
+        return String.fromCharCode(...buf);
     }
 
     function getNeighbors(r, c) {
@@ -1057,7 +1053,7 @@
             evalCache.clear();
             mandatoryCache.clear();
             setTimeout(() => {
-            const bestAction = aiSearch(3);
+            const bestAction = aiSearch(4);
             if (!bestAction) {
                 game.aiThinking = false;
                 endTurn();
@@ -1150,18 +1146,14 @@
             let bestAction = null;
             const actions = [];
             for (const target of reachable) {
-                const cloned = cloneGameState();
-                const pl = cloned.players[p];
-                pl.row = target.row;
-                pl.col = target.col;
                 for (const dir of wallDirs) {
-                    if (cloned.board[pl.row][pl.col].walls[dir]) continue;
+                    if (game.board[target.row][target.col].walls[dir]) continue;
                     const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
                     const dr = {top:-1, bottom:1, left:0, right:0}[dir];
                     const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-                    const oppR = pl.row + dr, oppC = pl.col + dc;
+                    const oppR = target.row + dr, oppC = target.col + dc;
                     if (!isInBounds(oppR, oppC)) continue;
-                    if (cloned.board[oppR][oppC].walls[oppDir]) continue;
+                    if (game.board[oppR][oppC].walls[oppDir]) continue;
                     actions.push({ target, dir, moveSteps: target.steps });
                 }
             }
@@ -1178,27 +1170,15 @@
                 const oppR = pl.row + dr, oppC = pl.col + dc;
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
-                // 初始排序仅使用纯净的evaluateState，让深层搜索结果主导决策
-                const score = evaluateStateCached(cloned, p);
-                act._score = score;
+                act._score = evaluateStateCached(cloned, p);
+                act._cloned = cloned; // 缓存克隆，避免深搜时重复克隆
             }
             actions.sort((a,b) => b._score - a._score);
 
             for (const act of actions) {
-                const cloned = cloneGameState();
+                const cloned = act._cloned;
                 const path = findShortestPath(start, act.target, p, cloned);
                 if (!path) continue;
-                
-                const pl = cloned.players[p];
-                pl.row = act.target.row;
-                pl.col = act.target.col;
-                const dir = act.dir;
-                const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-                const dr = {top:-1, bottom:1, left:0, right:0}[dir];
-                const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-                const oppR = pl.row + dr, oppC = pl.col + dc;
-                cloned.board[pl.row][pl.col].walls[dir] = true;
-                if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
                 
                 const [s0, s1, sep] = computeRegionsFromState(cloned);
                 if (sep) {
@@ -1265,21 +1245,16 @@
             }
             const wallDirs = ['top','right','bottom','left'];
             let bestScore = Infinity; // 对手希望最小化maxPlayer的评估
-            // 排序：按对手评估排序（对手评估是负的对自己有利，即maxPlayer评估小）
             const actions = [];
             for (const target of reachable) {
-                const cloned = cloneState(state);
-                const pl = cloned.players[p];
-                pl.row = target.row;
-                pl.col = target.col;
                 for (const dir of wallDirs) {
-                    if (cloned.board[pl.row][pl.col].walls[dir]) continue;
+                    if (state.board[target.row][target.col].walls[dir]) continue;
                     const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
                     const dr = {top:-1, bottom:1, left:0, right:0}[dir];
                     const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-                    const oppR = pl.row + dr, oppC = pl.col + dc;
+                    const oppR = target.row + dr, oppC = target.col + dc;
                     if (!isInBounds(oppR, oppC)) continue;
-                    if (cloned.board[oppR][oppC].walls[oppDir]) continue;
+                    if (state.board[oppR][oppC].walls[oppDir]) continue;
                     actions.push({ target, dir });
                 }
             }
@@ -1297,21 +1272,12 @@
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
                 act._score = evaluateStateCached(cloned, maxPlayer);
+                act._cloned = cloned;
             }
             actions.sort((a,b) => a._score - b._score);
             let beta = Infinity;
             for (const act of actions) {
-                const cloned = cloneState(state);
-                const pl = cloned.players[p];
-                pl.row = act.target.row;
-                pl.col = act.target.col;
-                const dir = act.dir;
-                const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-                const dr = {top:-1, bottom:1, left:0, right:0}[dir];
-                const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-                const oppR = pl.row + dr, oppC = pl.col + dc;
-                cloned.board[pl.row][pl.col].walls[dir] = true;
-                if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
+                const cloned = act._cloned;
                 const [s0, s1, sep] = computeRegionsFromState(cloned);
                 if (sep) {
                     const score = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
@@ -1362,22 +1328,17 @@
             let bestScore = -Infinity;
             const actions = [];
             for (const target of reachable) {
-                const cloned = cloneState(state);
-                const pl = cloned.players[p];
-                pl.row = target.row;
-                pl.col = target.col;
                 for (const dir of wallDirs) {
-                    if (cloned.board[pl.row][pl.col].walls[dir]) continue;
+                    if (state.board[target.row][target.col].walls[dir]) continue;
                     const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
                     const dr = {top:-1, bottom:1, left:0, right:0}[dir];
                     const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-                    const oppR = pl.row + dr, oppC = pl.col + dc;
+                    const oppR = target.row + dr, oppC = target.col + dc;
                     if (!isInBounds(oppR, oppC)) continue;
-                    if (cloned.board[oppR][oppC].walls[oppDir]) continue;
+                    if (state.board[oppR][oppC].walls[oppDir]) continue;
                     actions.push({ target, dir });
                 }
             }
-            // 排序（按评估降序）
             for (const act of actions) {
                 const cloned = cloneState(state);
                 const pl = cloned.players[p];
@@ -1391,21 +1352,12 @@
                 cloned.board[pl.row][pl.col].walls[dir] = true;
                 if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
                 act._score = evaluateStateCached(cloned, maxPlayer);
+                act._cloned = cloned;
             }
             actions.sort((a,b) => b._score - a._score);
             let alpha = -Infinity;
             for (const act of actions) {
-                const cloned = cloneState(state);
-                const pl = cloned.players[p];
-                pl.row = act.target.row;
-                pl.col = act.target.col;
-                const dir = act.dir;
-                const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
-                const dr = {top:-1, bottom:1, left:0, right:0}[dir];
-                const dc = {top:0, bottom:0, left:-1, right:1}[dir];
-                const oppR = pl.row + dr, oppC = pl.col + dc;
-                cloned.board[pl.row][pl.col].walls[dir] = true;
-                if (isInBounds(oppR, oppC)) cloned.board[oppR][oppC].walls[oppDir] = true;
+                const cloned = act._cloned;
                 const [s0, s1, sep] = computeRegionsFromState(cloned);
                 if (sep) {
                     const score = (maxPlayer === 0) ? (s0 - s1) : (s1 - s0);
@@ -1722,12 +1674,37 @@
             }            return score;
         }
 
-        // ---------- 克隆游戏状态 ----------
+        // ---------- 克隆游戏状态（手动复制，约比 JSON 快 10x）----------
         function cloneGameState() {
-            return JSON.parse(JSON.stringify(game));
+            return cloneState(game);
         }
         function cloneState(state) {
-            return JSON.parse(JSON.stringify(state));
+            const board = new Array(BOARD_SIZE);
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                board[r] = new Array(BOARD_SIZE);
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const w = state.board[r][c].walls;
+                    board[r][c] = { walls: { top: w.top, right: w.right, bottom: w.bottom, left: w.left } };
+                }
+            }
+            const p0 = state.players[0], p1 = state.players[1];
+            return {
+                board,
+                players: [
+                    { row: p0.row, col: p0.col, regionSize: p0.regionSize },
+                    { row: p1.row, col: p1.col, regionSize: p1.regionSize }
+                ],
+                currentPlayer: state.currentPlayer,
+                stepRemaining: state.stepRemaining,
+                phase: state.phase,
+                movePath: state.movePath ? [...state.movePath] : [],
+                wallDir: state.wallDir,
+                gameOver: state.gameOver,
+                winner: state.winner,
+                mode: state.mode,
+                turnCount: state.turnCount,
+                aiThinking: state.aiThinking
+            };
         }
         // 统计从位置(r,c)到目标(tr,tc)有多少个不同的"走廊方向"
         // 即从(r,c)出发，有多少个不被墙阻挡且能缩小与目标曼哈顿距离的相邻方向
@@ -1754,42 +1731,64 @@
             }
             return count;
         }
-        // 计算两个区域之间的"瓶颈"数量：从起点到终点所有路径都必须经过的关键格子数量
+        // 用 Tarjan 关节点算法计算路径瓶颈数（即两点间的 articulation points 数量）
         function countPathBottlenecks(state, r1, c1, r2, c2) {
-            const visited = new Set();
-            const queue = [{ row: r1, col: c1, path: [`${r1},${c1}`] }];
-            visited.add(`${r1},${c1}`);
-            const allPaths = [];
-            const maxPaths = 20;
-            while (queue.length > 0 && allPaths.length < maxPaths) {
-                const cur = queue.shift();
-                if (cur.row === r2 && cur.col === c2) {
-                    allPaths.push(cur.path);
-                    continue;
-                }
-                if (cur.path.length >= 10) continue;
-                const neighbors = getNeighborsFromState(state, cur.row, cur.col);
-                for (const nb of neighbors) {
-                    const key = `${nb.row},${nb.col}`;
-                    if (!visited.has(key) || (nb.row === r2 && nb.col === c2)) {
-                        if (!visited.has(key)) visited.add(key);
-                        queue.push({ row: nb.row, col: nb.col, path: [...cur.path, key] });
+            const N = BOARD_SIZE * BOARD_SIZE;
+            const adj = [];
+            for (let i = 0; i < N; i++) adj.push([]);
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const id = r * BOARD_SIZE + c;
+                    for (const nb of getNeighborsFromState(state, r, c)) {
+                        adj[id].push(nb.row * BOARD_SIZE + nb.col);
                     }
                 }
             }
-            if (allPaths.length === 0) return 0;
-            const pathSets = allPaths.map(p => new Set(p.slice(1, -1)));
-            if (pathSets.length === 0) return 1;
-            let bottleneckCount = 0;
-            const firstSet = pathSets[0];
-            for (const cell of firstSet) {
-                let inAll = true;
-                for (let i = 1; i < pathSets.length; i++) {
-                    if (!pathSets[i].has(cell)) { inAll = false; break; }
+            const startId = r1 * BOARD_SIZE + c1;
+            const disc = new Int16Array(N).fill(-1);
+            const low = new Int16Array(N);
+            const isAP = new Uint8Array(N);
+            let timer = 0;
+            const stack = [{ id: startId, parentId: -1, childIdx: 0, childCount: 0 }];
+            disc[startId] = low[startId] = timer++;
+            while (stack.length > 0) {
+                const frame = stack[stack.length - 1];
+                const { id, parentId } = frame;
+                let pushed = false;
+                while (frame.childIdx < adj[id].length) {
+                    const nid = adj[id][frame.childIdx++];
+                    if (disc[nid] === -1) {
+                        frame.childCount++;
+                        disc[nid] = low[nid] = timer++;
+                        stack.push({ id: nid, parentId: id, childIdx: 0, childCount: 0 });
+                        pushed = true;
+                        break;
+                    } else if (nid !== parentId) {
+                        low[id] = Math.min(low[id], disc[nid]);
+                    }
                 }
-                if (inAll) bottleneckCount++;
+                if (!pushed) {
+                    stack.pop();
+                    if (stack.length > 0) {
+                        const parent = stack[stack.length - 1];
+                        low[parent.id] = Math.min(low[parent.id], low[id]);
+                        if (parentId === -1) {
+                            if (frame.childCount > 1) isAP[id] = 1;
+                        } else {
+                            if (low[id] >= disc[parentId]) isAP[parentId] = 1;
+                        }
+                    }
+                }
             }
-            return bottleneckCount + 1;
+            // 统计在 r2,c2 可达范围内的 AP 数量
+            const targetId = r2 * BOARD_SIZE + c2;
+            if (disc[targetId] === -1) return 0;
+            let count = 0;
+            for (let id = 0; id < N; id++) {
+                if (id === startId || id === targetId) continue;
+                if (disc[id] !== -1 && isAP[id]) count++;
+            }
+            return count + 1;
         }
 
         function countMobility(state, player) {            const pl = state.players[player];
@@ -1910,58 +1909,96 @@
             return result;
         }
 
+        // Tarjan 关节点算法：O(V+E) 找到必经格（切点），替代原来 O(V×BFS)
         function findMandatoryCellsBetweenPlayers(state, player) {
             const p = player;
             const opp = 1 - p;
             const pl = state.players[p];
             const oppPl = state.players[opp];
-            const baseDist = shortestDistanceFromState(
-                state,
-                pl.row,
-                pl.col,
-                oppPl.row,
-                oppPl.col
-            );
+
+            // 先确认两人连通
+            const baseDist = shortestDistanceFromState(state, pl.row, pl.col, oppPl.row, oppPl.col);
             if (baseDist === Infinity) return [];
-            const result = [];
+
+            // 构建图：节点 id = r*7+c
+            const N = BOARD_SIZE * BOARD_SIZE;
+            const adj = new Array(N).fill(null).map(() => []);
             for (let r = 0; r < BOARD_SIZE; r++) {
                 for (let c = 0; c < BOARD_SIZE; c++) {
-                    // 不能把双方棋子本身当作必经格
-                    if (r === pl.row && c === pl.col) continue;
-                    if (r === oppPl.row && c === oppPl.col) continue;
-                    const blockedKey = `${r},${c}`;
-                    const stillConnected = isConnectedWithoutCell(
-                        state,
-                        pl.row,
-                        pl.col,
-                        oppPl.row,
-                        oppPl.col,
-                        blockedKey
-                    );
-                    if (!stillConnected) {
-                        const distFromAI = shortestDistanceFromState(
-                            state,
-                            pl.row,
-                            pl.col,
-                            r,
-                            c
-                        );
-                        const distFromOpp = shortestDistanceFromState(
-                            state,
-                            oppPl.row,
-                            oppPl.col,
-                            r,
-                            c
-                        );
-                        result.push({
-                            row: r,
-                            col: c,
-                            distFromAI,
-                            distFromOpp
-                        });
+                    const id = r * BOARD_SIZE + c;
+                    const nbs = getNeighborsFromState(state, r, c);
+                    for (const nb of nbs) {
+                        adj[id].push(nb.row * BOARD_SIZE + nb.col);
                     }
                 }
             }
+
+            // Tarjan DFS，从 pl 出发
+            const disc = new Int16Array(N).fill(-1);
+            const low = new Int16Array(N);
+            const isAP = new Uint8Array(N); // articulation points
+            let timer = 0;
+            const startId = pl.row * BOARD_SIZE + pl.col;
+
+            // 迭代式 Tarjan（避免递归栈溢出）
+            const stack = [{ id: startId, parentId: -1, childIdx: 0, childCount: 0 }];
+            disc[startId] = low[startId] = timer++;
+
+            while (stack.length > 0) {
+                const frame = stack[stack.length - 1];
+                const { id, parentId } = frame;
+                const neighbors = adj[id];
+                let pushed = false;
+
+                while (frame.childIdx < neighbors.length) {
+                    const nid = neighbors[frame.childIdx];
+                    frame.childIdx++;
+                    if (disc[nid] === -1) {
+                        frame.childCount++;
+                        disc[nid] = low[nid] = timer++;
+                        stack.push({ id: nid, parentId: id, childIdx: 0, childCount: 0 });
+                        pushed = true;
+                        break;
+                    } else if (nid !== parentId) {
+                        low[id] = Math.min(low[id], disc[nid]);
+                    }
+                }
+
+                if (!pushed) {
+                    stack.pop();
+                    if (stack.length > 0) {
+                        const parent = stack[stack.length - 1];
+                        low[parent.id] = Math.min(low[parent.id], low[id]);
+                        // AP 判定
+                        if (parentId === -1) {
+                            if (frame.childCount > 1) isAP[id] = 1;
+                        } else {
+                            if (low[id] >= disc[parentId]) isAP[parentId] = 1;
+                        }
+                    }
+                }
+            }
+
+            // 关节点 + 在 pl→oppPl 路径上 = mandatory cell
+            const targetId = oppPl.row * BOARD_SIZE + oppPl.col;
+            const result = [];
+
+            for (let id = 0; id < N; id++) {
+                if (disc[id] === -1) continue; // 不可达
+                if (id === startId || id === targetId) continue;
+                if (!isAP[id]) continue;
+                const r = Math.floor(id / BOARD_SIZE);
+                const c = id % BOARD_SIZE;
+                // 确认移除该点后 pl 和 oppPl 不连通
+                const blockedKey = `${r},${c}`;
+                const stillConnected = isConnectedWithoutCell(state, pl.row, pl.col, oppPl.row, oppPl.col, blockedKey);
+                if (!stillConnected) {
+                    const distFromAI = shortestDistanceFromState(state, pl.row, pl.col, r, c);
+                    const distFromOpp = shortestDistanceFromState(state, oppPl.row, oppPl.col, r, c);
+                    result.push({ row: r, col: c, distFromAI, distFromOpp });
+                }
+            }
+
             result.sort((a, b) => a.distFromAI - b.distFromAI);
             return result;
         }
