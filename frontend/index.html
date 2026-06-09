@@ -1547,8 +1547,11 @@ self.onmessage = function(e) {
         const key = getStatsKey();
         const s = stats[key];
         if (!s) return;
+        const modeLabel = game.mode === 'pve'
+            ? (aiDifficulty === 'master' ? '大师' : '专家')
+            : getModeLabel();
         statsText.textContent =
-            `${getModeLabel()}战绩：您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
+            `${modeLabel}战绩：您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
     }
 
     function recordGameResult() {
