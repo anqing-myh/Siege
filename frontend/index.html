@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.1.0 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.2.0 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -1547,11 +1547,14 @@ self.onmessage = function(e) {
         const key = getStatsKey();
         const s = stats[key];
         if (!s) return;
-        const modeLabel = game.mode === 'pve'
-            ? (aiDifficulty === 'master' ? '大师' : '专家')
-            : getModeLabel();
+        let label;
+        if (game.mode === 'pve') {
+            label = aiDifficulty === 'master' ? '大师' : '专家';
+        } else {
+            label = getModeLabel();
+        }
         statsText.textContent =
-            `${modeLabel}战绩：您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
+            `[${label}] 您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
     }
 
     function recordGameResult() {
