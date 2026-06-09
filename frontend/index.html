@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.2.1 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.2.2 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -882,6 +882,152 @@ function emergencyTrap(start, oppStart, actions, p) {
     if (!best) return null;
     const path = findShortestPath(start, best.target, p, cloneState(game));
     return path ? { moves: path.slice(1), wallDir: best.dir } : null;
+}
+
+function findForcedFirstStep(state, p) {
+    const pl = state.players[p], oppPl = state.players[1-p];
+    const nbs = getNeighborsFromState(state, pl.row, pl.col)
+        .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col));
+    if (nbs.length <= 1) return nbs.length === 1 ? nbs[0] : null;
+    const forced = nbs.filter(nb => {
+        const block = nb.row * BOARD_SIZE + nb.col;
+        const queue2 = [{ row: pl.row, col: pl.col }];
+        const vis2 = new Set([pl.row * BOARD_SIZE + pl.col]);
+        let found = false;
+        while (queue2.length > 0 && !found) {
+            const cur = queue2.shift();
+            for (const n of getNeighborsFromState(state, cur.row, cur.col)) {
+                const k = n.row * BOARD_SIZE + n.col;
+                if (k === block || vis2.has(k)) continue;
+                if (n.row === oppPl.row && n.col === oppPl.col) { found = true; break; }
+                vis2.add(k); queue2.push(n);
+            }
+        }
+        return !found;
+    });
+    return forced.length === 1 ? forced[0] : null;
+}
+
+function findUniqueOpenPath(state, p) {
+    const pl = state.players[p], oppPl = state.players[1-p];
+    const nbs = getNeighborsFromState(state, pl.row, pl.col)
+        .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col));
+    if (nbs.length === 0) return null;
+    const myArea = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 49);
+    const openNbs = nbs.filter(nb => {
+        const areaWithout = bfsReachCount(state, pl.row, pl.col, nb.row, nb.col, 49);
+        return areaWithout >= myArea * 0.7;
+    });
+    return openNbs.length === 1 ? openNbs[0] : null;
+}
+
+function aiSearch(depth) {
+    const p = game.currentPlayer;
+    const opp = 1 - p;
+    const start = { row: game.players[p].row, col: game.players[p].col };
+    const oppStart = { row: game.players[opp].row, col: game.players[opp].col };
+
+    const reachable = [];
+    const visited = new Set([start.row * BOARD_SIZE + start.col]);
+    const queue = [{ row: start.row, col: start.col, steps: 0 }];
+    while (queue.length > 0) {
+        const cur = queue.shift();
+        reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
+        if (cur.steps >= 3) continue;
+        for (const nb of getNeighborsFromState(game, cur.row, cur.col)) {
+            if (nb.row === oppStart.row && nb.col === oppStart.col) continue;
+            const k = nb.row * BOARD_SIZE + nb.col;
+            if (!visited.has(k)) { visited.add(k); queue.push({ row: nb.row, col: nb.col, steps: cur.steps + 1 }); }
+        }
+    }
+
+    const wallDirs = ['top','right','bottom','left'];
+    const wallPlaced = new Set();
+    const actions = [];
+    for (const target of reachable) {
+        for (const dir of wallDirs) {
+            if (game.board[target.row][target.col].walls[dir]) continue;
+            const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
+            const dr = {top:-1, bottom:1, left:0, right:0}[dir];
+            const dc = {top:0, bottom:0, left:-1, right:1}[dir];
+            const oppR = target.row + dr, oppC = target.col + dc;
+            if (!isInBounds(oppR, oppC) || game.board[oppR][oppC].walls[oppDir]) continue;
+            const wallKey = target.row+','+target.col+','+dir;
+            if (wallPlaced.has(wallKey)) continue;
+            wallPlaced.add(wallKey);
+            actions.push({ target, dir, moveSteps: target.steps });
+        }
+    }
+    if (actions.length === 0) return null;
+
+    const myReach3 = bfsReachCount(game, start.row, start.col, oppStart.row, oppStart.col, 3);
+    const oppReach3 = bfsReachCount(game, oppStart.row, oppStart.col, start.row, start.col, 3);
+    const isEarlyGame = game.turnCount <= 2;
+    const myFullReach = bfsReachCount(game, start.row, start.col, oppStart.row, oppStart.col, 49);
+    const oppFullReach = bfsReachCount(game, oppStart.row, oppStart.col, start.row, start.col, 49);
+
+    if (myFullReach <= 10) return emergencyEscape(start, oppStart, actions, p);
+    if (oppReach3 <= 5) return emergencyTrap(start, oppStart, actions, p);
+
+    const forcedStep = !isEarlyGame ? findForcedFirstStep(game, p) : null;
+
+    if (!isEarlyGame) {
+        const openPath = findUniqueOpenPath(game, p);
+        if (openPath) {
+            const distTarget = Math.abs(openPath.row - oppStart.row) + Math.abs(openPath.col - oppStart.col);
+            const urgentActions = actions.filter(a => {
+                const d = Math.abs(a.target.row - oppStart.row) + Math.abs(a.target.col - oppStart.col);
+                return d < distTarget + 3;
+            });
+            if (urgentActions.length > 0 && urgentActions.length < actions.length * 0.4) {
+                return runSearch(urgentActions, depth, p, start, oppStart, forcedStep, false);
+            }
+        }
+    }
+
+    let searchDepth = depth;
+    if (actions.length <= 16)      searchDepth = Math.min(depth + 2, 6);
+    else if (actions.length <= 32) searchDepth = Math.min(depth + 1, 5);
+    else if (actions.length >= 60) searchDepth = Math.max(depth - 1, 3);
+
+    let maxCandidates;
+    if (isEarlyGame) {
+        maxCandidates = 6;
+    } else if (actions.length <= 16) {
+        maxCandidates = actions.length;
+    } else if (actions.length <= 32) {
+        maxCandidates = actions.length;
+    } else if (actions.length <= 40) {
+        maxCandidates = depth >= 4 ? 20 : 16;
+    } else {
+        maxCandidates = depth >= 4 ? 18 : 14;
+    }
+
+    for (const act of actions) {
+        const cloned = cloneState(game);
+        const pl = cloned.players[p];
+        pl.row = act.target.row; pl.col = act.target.col;
+        applyWall(cloned, pl.row, pl.col, act.dir);
+        const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, cloned.players[opp].row, cloned.players[opp].col, 49);
+        if (myAreaAfter <= 3) {
+            act._score = -9999 + myAreaAfter * 100;
+            act._cloned = cloned;
+            continue;
+        }
+        const selfBlockPenalty = myAreaAfter < myFullReach ? (myFullReach - myAreaAfter) * 25 : 0;
+        let forcedBonus = 0;
+        if (forcedStep && act.moveSteps >= 1) {
+            const distActToForced = Math.abs(act.target.row - forcedStep.row) + Math.abs(act.target.col - forcedStep.col);
+            const distStartToForced = Math.abs(start.row - forcedStep.row) + Math.abs(start.col - forcedStep.col);
+            if (distActToForced < distStartToForced) forcedBonus = 80;
+        }
+        act._score = evaluateStateCached(cloned, p) + act.moveSteps * 30 - selfBlockPenalty + forcedBonus;
+        act._cloned = cloned;
+    }
+    actions.sort((a, b) => b._score - a._score);
+    const candidates = actions.slice(0, maxCandidates);
+
+    return runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, true);
 }
 
 // 辅助：快速放墙
