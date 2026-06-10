@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.3.1 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.3.2 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -1129,6 +1129,80 @@ function findUniqueOpenPath(state, p) {
     return openNbs.length === 1 ? openNbs[0] : null;
 }
 
+// 检测某方向的通路是否为"伪死路"
+// 定义：从当前位置出发，沿最短路径走，连续3个格子中每个格子可放墙的方向 <= 2
+// 这意味着对手封一道墙就能切断AI经过后的退路
+function isPseudoDeadEnd(state, p, entryNb) {
+    const oppPl = state.players[1-p];
+    // 从 entryNb 开始 BFS 找到对手，收集沿途格子
+    const visited = new Set([state.players[p].row * BOARD_SIZE + state.players[p].col]);
+    const queue = [{ row: entryNb.row, col: entryNb.col, path: [entryNb] }];
+    visited.add(entryNb.row * BOARD_SIZE + entryNb.col);
+    let narrowPath = null;
+    while (queue.length > 0) {
+        const cur = queue.shift();
+        if (cur.row === oppPl.row && cur.col === oppPl.col) {
+            narrowPath = cur.path;
+            break;
+        }
+        for (const nb of getNeighborsFromState(state, cur.row, cur.col)) {
+            if (nb.row === oppPl.row && nb.col === oppPl.col) {
+                narrowPath = [...cur.path, nb];
+                break;
+            }
+            const k = nb.row * BOARD_SIZE + nb.col;
+            if (!visited.has(k)) {
+                visited.add(k);
+                queue.push({ row: nb.row, col: nb.col, path: [...cur.path, nb] });
+            }
+        }
+        if (narrowPath) break;
+    }
+    if (!narrowPath || narrowPath.length < 3) return false;
+    // 检查路径上连续3个格子是否每个可放墙方向 <= 2
+    // 可放墙方向 = 未被封死的邻居方向数（不含已有墙的）
+    let consecutiveNarrow = 0;
+    for (const cell of narrowPath) {
+        const wallDirs = ['top','right','bottom','left'];
+        let available = 0;
+        for (const dir of wallDirs) {
+            if (!state.board[cell.row][cell.col].walls[dir]) available++;
+        }
+        if (available <= 2) {
+            consecutiveNarrow++;
+            if (consecutiveNarrow >= 3) return true;
+        } else {
+            consecutiveNarrow = 0;
+        }
+    }
+    return false;
+}
+
+// 分析所有通路，返回 { hasRealPath, pseudoDeadEnds, allPseudo }
+// hasRealPath: 存在非伪死路通路
+// pseudoDeadEnds: 伪死路入口列表
+// allPseudo: 所有通路都是伪死路
+function analyzePathTypes(state, p) {
+    const pl = state.players[p], oppPl = state.players[1-p];
+    const nbs = getNeighborsFromState(state, pl.row, pl.col)
+        .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col));
+    if (nbs.length === 0) return { hasRealPath: false, pseudoDeadEnds: [], allPseudo: true };
+    const myArea = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 49);
+    // 只考虑"开放"方向（不会立刻截断大面积）
+    const openNbs = nbs.filter(nb => {
+        const areaWithout = bfsReachCount(state, pl.row, pl.col, nb.row, nb.col, 49);
+        return areaWithout >= myArea * 0.5;
+    });
+    if (openNbs.length === 0) return { hasRealPath: false, pseudoDeadEnds: [], allPseudo: true };
+    const pseudoDeadEnds = openNbs.filter(nb => isPseudoDeadEnd(state, p, nb));
+    const realPaths = openNbs.filter(nb => !isPseudoDeadEnd(state, p, nb));
+    return {
+        hasRealPath: realPaths.length > 0,
+        pseudoDeadEnds,
+        allPseudo: realPaths.length === 0 && pseudoDeadEnds.length > 0
+    };
+}
+
 function aiSearch(depth) {
     const p = game.currentPlayer;
     const opp = 1 - p;
@@ -1191,7 +1265,6 @@ function aiSearch(depth) {
                 const c = cloneState(game);
                 c.players[p].row = a.target.row; c.players[p].col = a.target.col;
                 applyWall(c, a.target.row, a.target.col, a.dir);
-                // 只有对手下一步能立刻赢才排除此动作
                 if (assessOpponentThreats(c, p).canWin) return false;
                 a._cloned = c;
                 return true;
@@ -1204,7 +1277,6 @@ function aiSearch(depth) {
 
     // 第一回合：直接浅搜，不需要深度思考
     if (game.turnCount === 1) {
-        const useFullEval0 = false;
         for (const act of actions) {
             const cloned = cloneState(game);
             const pl = cloned.players[p];
@@ -1217,28 +1289,33 @@ function aiSearch(depth) {
         return runSearch(actions.slice(0, 6), 2, p, start, oppStart, null, true);
     }
 
+    // 伪死路分析（中后期）：有真实通路时，降低伪死路方向候选的优先级
+    const pathAnalysis = !isEarlyGame ? analyzePathTypes(game, p) : null;
+    const pseudoDeadEntries = pathAnalysis && pathAnalysis.pseudoDeadEnds.length > 0
+        ? new Set(pathAnalysis.pseudoDeadEnds.map(nb => nb.row * BOARD_SIZE + nb.col))
+        : null;
+
     // 动态搜索深度：中后期加深
     let searchDepth = depth;
-    if (actions.length <= 20)      searchDepth = Math.min(depth + 1, 6); // 极后期+1
-    else if (actions.length <= 40) searchDepth = Math.min(depth + 1, 5); // 中后期+1
-    else if (actions.length >= 70) searchDepth = Math.max(depth - 1, 3); // 前期开局-1
+    if (actions.length <= 20)      searchDepth = Math.min(depth + 1, 6);
+    else if (actions.length <= 40) searchDepth = Math.min(depth + 1, 5);
+    else if (actions.length >= 70) searchDepth = Math.max(depth - 1, 3);
 
     // 候选数：中后期适当放宽
     let maxCandidates;
     if (isEarlyGame) {
         maxCandidates = 12;
     } else if (actions.length <= 16) {
-        maxCandidates = actions.length;                              // 极后期全搜
+        maxCandidates = actions.length;
     } else if (actions.length <= 32) {
-        maxCandidates = Math.min(actions.length, depth >= 4 ? 28 : 24); // 后期
+        maxCandidates = Math.min(actions.length, depth >= 4 ? 28 : 24);
     } else if (actions.length <= 50) {
-        maxCandidates = depth >= 4 ? 22 : 18;                       // 中期
+        maxCandidates = depth >= 4 ? 22 : 18;
     } else {
-        maxCandidates = depth >= 4 ? 16 : 12;                       // 前期
+        maxCandidates = depth >= 4 ? 16 : 12;
     }
 
-    // 预评分：加入必经第一步奖励 + 封自己惩罚
-    // 前期动作多，用轻量评估；中后期动作少，用完整评估
+    // 预评分
     const useFullEval = actions.length <= 40;
     for (const act of actions) {
         const cloned = cloneState(game);
@@ -1246,12 +1323,24 @@ function aiSearch(depth) {
         pl.row = act.target.row; pl.col = act.target.col;
         applyWall(cloned, pl.row, pl.col, act.dir);
         const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, cloned.players[opp].row, cloned.players[opp].col, 49);
-        // 预评分惩罚：面积极小时降低优先级，但不排除（让 runSearch 做最终判断）
+        const oppAreaAfter = bfsReachCount(cloned, cloned.players[opp].row, cloned.players[opp].col, pl.row, pl.col, 49);
+        // areaPenalty：AI面积极小时降低优先级
         let areaPenalty = 0;
-        if (myAreaAfter <= 4) areaPenalty = 3000;       // 几乎必死，排到最后
+        if (myAreaAfter <= 4) areaPenalty = 3000;
         else if (myAreaAfter <= 6) areaPenalty = 1500;
         else if (myAreaAfter <= 9) areaPenalty = (9 - myAreaAfter) * 200;
-        const selfBlockPenalty = myAreaAfter < myFullReach ? (myFullReach - myAreaAfter) * 25 : 0;
+        // selfBlockPenalty：AI面积减少时惩罚；若对手面积也同等减少（封的是无人空区），大幅减弱惩罚
+        const myLoss = Math.max(0, myFullReach - myAreaAfter);
+        const oppLoss = Math.max(0, oppFullReach - oppAreaAfter);
+        const netLoss = Math.max(0, myLoss - oppLoss); // 只惩罚 AI 单方面减少的部分
+        const selfBlockPenalty = netLoss * 20;
+        // 伪死路惩罚：当存在真实通路时，降低进入伪死路方向的候选优先级
+        let pseudoPenalty = 0;
+        if (pathAnalysis && pathAnalysis.hasRealPath && pseudoDeadEntries) {
+            // act.target 是第一步落点，检查其是否在伪死路入口
+            const targetKey = act.target.row * BOARD_SIZE + act.target.col;
+            if (pseudoDeadEntries.has(targetKey)) pseudoPenalty = 400;
+        }
         let forcedBonus = 0;
         if (forcedStep && act.moveSteps >= 1) {
             const distActToForced = Math.abs(act.target.row - forcedStep.row) + Math.abs(act.target.col - forcedStep.col);
@@ -1259,11 +1348,19 @@ function aiSearch(depth) {
             if (distActToForced < distStartToForced) forcedBonus = 80;
         }
         const evalScore = useFullEval ? evaluateStateCached(cloned, p) : evaluateStateLight(cloned, p);
-        act._score = evalScore + act.moveSteps * 30 - selfBlockPenalty - areaPenalty + forcedBonus;
+        act._score = evalScore + act.moveSteps * 30 - selfBlockPenalty - areaPenalty - pseudoPenalty + forcedBonus;
         act._cloned = cloned;
     }
     actions.sort((a, b) => b._score - a._score);
-    const candidates = actions.slice(0, maxCandidates);
+
+    // 全是伪死路时：额外放入代表性的伪死路候选，确保至少有伪死路入口的动作被考虑到
+    let candidates = actions.slice(0, maxCandidates);
+    if (pathAnalysis && pathAnalysis.allPseudo && pseudoDeadEntries) {
+        // 确保至少有几个伪死路方向的动作进入候选
+        const pseudoCands = actions.filter(a => pseudoDeadEntries.has(a.target.row * BOARD_SIZE + a.target.col));
+        const extra = pseudoCands.filter(a => !candidates.includes(a)).slice(0, 4);
+        if (extra.length > 0) candidates = candidates.concat(extra);
+    }
 
     return runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, true);
 }
@@ -1317,13 +1414,11 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
         if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
     }
 
-    // Pass 2：打分、排序，然后按顺序找第一个"不会直接输"的候选
-    const validResults = results.filter(r => r && !r.immediate && !r.suicide);
-    const allLeadToOppWin = validResults.length > 0 && validResults.every(r => r.oppCanWin);
-    const bestMinAIArea = validResults.reduce((m, r) => Math.max(m, r.minAIArea || 49), 0);
-    const bestMyArea = validResults.reduce((m, r) => Math.max(m, r.myArea || 49), 0);
+    // Pass 2：打分、排序，然后按顺序找第一个"不会立即输/被一步杀"的候选
+    // "立即输" = sep=true 且 AI 面积小；"被一步杀" = threats.canWin = true
+    // 两者等价：均打极低分 = -10000 + myArea * 100，按面积决定相对优劣
 
-    // 先立即返回分离且 AI 赢的情况（直接封死对手且面积大）
+    // 先立即返回分离且 AI 赢的情况
     for (let ci = 0; ci < total; ci++) {
         const r = results[ci];
         if (r && r.immediate && r.score > 0) {
@@ -1331,18 +1426,32 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
         }
     }
 
+    const validResults = results.filter(r => r && !r.immediate && !r.suicide);
+    const bestMinAIArea = validResults.reduce((m, r) => Math.max(m, r.minAIArea || 49), 0);
+    const bestMyArea = validResults.reduce((m, r) => Math.max(m, r.myArea || 49), 0);
+
     // 给每个候选计算最终得分
     const scored = [];
     for (let ci = 0; ci < total; ci++) {
         const r = results[ci];
         if (!r) continue;
-        const act = candidates[ci];
         let score;
+        let isFatal = false; // 标记"立即输"或"被一步杀"
+        let fatalArea = 0;   // fatal 时的 AI 面积，用于相对比较
         if (r.immediate) {
-            // sep=true 且 AI 输了：极低分，但比 suicide 高一点（作为最后手段）
-            score = -8000 + r.score * 0.1;
+            if (r.score > 0) continue; // 已在上面处理
+            // sep=true，AI 面积小：立即输
+            // r.score = aiArea - oppArea（负数），从中还原 aiArea 不直接，直接用 myAreaNow 近似
+            // 用 -10000 + (aiArea) * 100，aiArea ≈ (r.score + oppArea)/2 但我们不知道 oppArea
+            // 简化：r.score 已经反映面积差，直接 -10000 + r.score（r.score 越大越好，即面积差越大）
+            isFatal = true;
+            fatalArea = r.score; // 负的面积差，越大越好
+            score = -10000 + r.score;
         } else if (r.suicide) {
-            score = -9000 + r.score * 0.001;
+            // suicide: myAreaNow <= 4 => -10000 + myAreaNow*100; threats.canWin => -10000 + myAreaNow*100
+            isFatal = true;
+            fatalArea = r.score; // 已经是 -5000+area*100 或 -4800+area*80，用原值作为相对比较
+            score = -10000 + (r.score + 10000) * 0.01; // 压到 -10000 附近，保留相对顺序
         } else {
             score = r.score;
             if (r.minAIArea !== undefined && r.minAIArea <= 5 && bestMinAIArea > 5) {
@@ -1356,23 +1465,22 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
                 score = r.score - penalty;
             }
         }
-        scored.push({ ci, score, immediate: r.immediate, immediateScore: r.score });
+        scored.push({ ci, score, isFatal });
     }
 
     // 按得分从高到低排序
     scored.sort((a, b) => b.score - a.score);
 
-    // 依次检查：跳过"直接分隔且 AI 输"的候选，选第一个安全的
-    for (const { ci, score, immediate, immediateScore } of scored) {
-        // immediate=true 且 score<0 表示 AI 走这步直接被围且面积小 → 直接输，跳过
-        if (immediate && immediateScore < 0) continue;
+    // 依次找第一个不会立即输/被一步杀的候选
+    for (const { ci, isFatal } of scored) {
+        if (isFatal) continue;
         const act = candidates[ci];
         const r = results[ci];
         return { moves: r.path.slice(1), wallDir: act.dir };
     }
-    // 所有候选都会直接输（理论上不会走到这里，但兜底返回得分最高的）
+    // 所有候选都是 fatal：选面积最大的（输得最少）
     if (scored.length > 0) {
-        const { ci } = scored[0];
+        const { ci } = scored[0]; // 已按 score 排序，第一个 fatal 分最高即面积最大
         const act = candidates[ci];
         const r = results[ci];
         return { moves: r.path.slice(1), wallDir: act.dir };
