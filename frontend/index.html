@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.3.2 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.3.5 2026/6/9   感谢游玩！
     </div>
 </div>
 <script>
@@ -599,14 +599,34 @@ function computeRegionsFromState(state) {
     return [size0, visited1.size, true];
 }
 
-function countMobility(state, player) {
+// 估算可用行动总数：BFS 3步可达格子 × 可放墙方向（近似，不精确去重）
+function countActions(state, player) {
     const pl = state.players[player];
-    let count = 0;
     const opp = 1 - player;
-    for (const nb of getNeighborsFromState(state, pl.row, pl.col)) {
-        if (nb.row !== state.players[opp].row || nb.col !== state.players[opp].col) count++;
+    const oppPl = state.players[opp];
+    const visited = new Set([pl.row * BOARD_SIZE + pl.col]);
+    const queue = [{ row: pl.row, col: pl.col, steps: 0 }];
+    let total = 0;
+    const wallDirs = ['top','right','bottom','left'];
+    while (queue.length > 0) {
+        const cur = queue.shift();
+        // 每个可达格子统计可以放的墙数
+        for (const dir of wallDirs) {
+            if (state.board[cur.row][cur.col].walls[dir]) continue;
+            const oppDir = {top:'bottom',bottom:'top',left:'right',right:'left'}[dir];
+            const dr = {top:-1,bottom:1,left:0,right:0}[dir];
+            const dc = {top:0,bottom:0,left:-1,right:1}[dir];
+            const nr = cur.row + dr, nc = cur.col + dc;
+            if (isInBounds(nr, nc) && !state.board[nr][nc].walls[oppDir]) total++;
+        }
+        if (cur.steps >= 3) continue;
+        for (const nb of getNeighborsFromState(state, cur.row, cur.col)) {
+            if (nb.row === oppPl.row && nb.col === oppPl.col) continue;
+            const k = nb.row * BOARD_SIZE + nb.col;
+            if (!visited.has(k)) { visited.add(k); queue.push({ row: nb.row, col: nb.col, steps: cur.steps + 1 }); }
+        }
     }
-    return count;
+    return total;
 }
 
 function shortestDistanceFromState(state, sr, sc, tr, tc, blockedKey) {
@@ -746,9 +766,17 @@ function evaluateStateLight(state, maxPlayer) {
     const myReach3 = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 3);
     const oppReach3 = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 3);
     let score = (myReach3 - oppReach3) * 20 + (mySize - oppSize) * 40;
-    const myMob = countMobility(state, p);
-    const oppMob = countMobility(state, opp);
-    score += (myMob - oppMob) * 25;
+    // 用 countActions 替代 countMobility：更全面反映行动空间
+    const myAct = countActions(state, p);
+    const oppAct = countActions(state, opp);
+    score += (myAct - oppAct) * 3;
+    if (oppAct <= 8) score += (8 - oppAct) * 20;
+    if (myAct <= 8) score -= (8 - myAct) * 15;
+    // 保留直接邻居数的高敏感惩罚/奖励（1步灵活性，countActions 在极端情况下可能不够快）
+    const myMob = getNeighborsFromState(state, pl.row, pl.col)
+        .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col)).length;
+    const oppMob = getNeighborsFromState(state, oppPl.row, oppPl.col)
+        .filter(nb => !(nb.row === pl.row && nb.col === pl.col)).length;
     if (oppMob <= 1) score += (2 - oppMob) * 150;
     if (myMob <= 1) score -= (2 - myMob) * 120;
     score += myReach3 * 5;
@@ -773,9 +801,17 @@ function evaluateStateRaw(state, maxPlayer) {
     const oppReach3 = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 3);
     let score = (myReach3 - oppReach3) * 20 + (mySize - oppSize) * 40;
 
-    const myMob = countMobility(state, p);
-    const oppMob = countMobility(state, opp);
-    score += (myMob - oppMob) * 25;
+    // 用 countActions 替代 countMobility：3步内行动总数差
+    const myAct = countActions(state, p);
+    const oppAct = countActions(state, opp);
+    score += (myAct - oppAct) * 3;
+    if (oppAct <= 8) score += (8 - oppAct) * 20;
+    if (myAct <= 8) score -= (8 - myAct) * 15;
+    // 直接邻居数用于极端情况的灵活性惩罚/奖励（1步内，比 countActions 更敏感）
+    const myMob = getNeighborsFromState(state, pl.row, pl.col)
+        .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col)).length;
+    const oppMob = getNeighborsFromState(state, oppPl.row, oppPl.col)
+        .filter(nb => !(nb.row === pl.row && nb.col === pl.col)).length;
     if (oppMob <= 1) score += (2 - oppMob) * 150;
     if (myMob <= 1) score -= (2 - myMob) * 120;
 
@@ -810,6 +846,18 @@ function evaluateStateRaw(state, maxPlayer) {
         if (oppFullReach <= 15) {
             const d3 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
             score += (15 - oppFullReach) * 22 + Math.max(0, 7 - d3) * 30;
+        }
+
+        // 残局堵截奖励：当对手进入AI区域的通路很窄（oppReach3 <= 3），
+        // 奖励AI棋子靠近该通路入口（直面对手），防止对手蚕食AI领地
+        if (oppReach3 <= 3 && myFullReach > oppFullReach) {
+            const distToOpp2 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+            score += Math.max(0, 8 - distToOpp2) * 40; // 靠近对手高奖励
+            // 检测AI是否处于对手和AI区域之间的咽喉位置（AI面向对手方向有墙）
+            const dirR = oppPl.row > pl.row ? 'top' : oppPl.row < pl.row ? 'bottom' : null;
+            const dirC = oppPl.col > pl.col ? 'left' : oppPl.col < pl.col ? 'right' : null;
+            if (dirR && !state.board[pl.row][pl.col].walls[dirR]) score += 50; // 朝对手方向开放
+            if (dirC && !state.board[pl.row][pl.col].walls[dirC]) score += 50;
         }
     }
 
@@ -1242,6 +1290,21 @@ function aiSearch(depth) {
     }
     if (actions.length === 0) return null;
 
+    // 一步获胜检测：扫描所有动作，有立即赢的就直接返回
+    for (const act of actions) {
+        const c = cloneState(game);
+        c.players[p].row = act.target.row; c.players[p].col = act.target.col;
+        applyWall(c, act.target.row, act.target.col, act.dir);
+        const [s0w, s1w, sepw] = computeRegionsFromState(c);
+        if (sepw) {
+            const winScore = (p === 0) ? (s0w - s1w) : (s1w - s0w);
+            if (winScore > 0) {
+                const path = findShortestPath(start, act.target, p, c);
+                if (path) return { moves: path.slice(1), wallDir: act.dir };
+            }
+        }
+    }
+
     const myReach3 = bfsReachCount(game, start.row, start.col, oppStart.row, oppStart.col, 3);
     const oppReach3 = bfsReachCount(game, oppStart.row, oppStart.col, start.row, start.col, 3);
     const isEarlyGame = game.turnCount <= 2;
@@ -1322,8 +1385,9 @@ function aiSearch(depth) {
         const pl = cloned.players[p];
         pl.row = act.target.row; pl.col = act.target.col;
         applyWall(cloned, pl.row, pl.col, act.dir);
-        const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, cloned.players[opp].row, cloned.players[opp].col, 49);
-        const oppAreaAfter = bfsReachCount(cloned, cloned.players[opp].row, cloned.players[opp].col, pl.row, pl.col, 49);
+        // 面积计算不排除对手：对手暂时挡路不算真正被封死
+        const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, -1, -1, 49);
+        const oppAreaAfter = bfsReachCount(cloned, cloned.players[opp].row, cloned.players[opp].col, -1, -1, 49);
         // areaPenalty：AI面积极小时降低优先级
         let areaPenalty = 0;
         if (myAreaAfter <= 4) areaPenalty = 3000;
@@ -1389,9 +1453,9 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
             if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
             continue;
         }
-        const myAreaNow = bfsReachCount(cloned, act.target.row, act.target.col,
-            cloned.players[1-p].row, cloned.players[1-p].col, 49);
-        // 自己走进极小区域（≤4格）直接视为自杀，无需对手确认
+        // myAreaNow：AI落点出发，纯墙限制的可达格数（不排除对手，对手挡路只是暂时的）
+        const myAreaNow = bfsReachCount(cloned, act.target.row, act.target.col, -1, -1, 49);
+        // 自己走进极小封闭区域（≤4格，基于纯墙连通性）才视为自杀
         if (myAreaNow <= 4) {
             results.push({ path, score: -5000 + myAreaNow * 100, suicide: true });
             if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
