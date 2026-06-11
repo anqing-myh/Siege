@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.3.9 2026/6/10   感谢游玩！
+        <br>版本信息：Version 2.4.1 2026/6/10   感谢游玩！
     </div>
 </div>
 <script>
@@ -766,18 +766,20 @@ function evaluateStateLight(state, maxPlayer) {
     let score = (myReach3 - oppReach3) * 12;
     const myAct = countActions(state, p);
     const oppAct = countActions(state, opp);
-    score += (myAct - oppAct) * 6;
-    score += myAct * 2; // 绝对值奖励：行动空间越大越好
-    if (oppAct <= 8) score += (8 - oppAct) * 25;
-    if (myAct <= 8) score -= (8 - myAct) * 20;
+    score += (myAct - oppAct) * 10;                    // 行动数差：扩大优势、压缩对手
+    if (oppAct <= 8) score += (8 - oppAct) * 25;       // 对手行动枯竭
+    else if (oppAct <= 25) score += (25 - oppAct) * 8;  // 连续压缩奖励
+    if (myAct <= 8) score -= (8 - myAct) * 20;          // 自己行动枯竭
+    // 短距进攻奖励：越近越好
+    const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
+    score += Math.max(0, 12 - distToOpp) * 22;
+    score += Math.max(0, 6 - distToOpp) * 30;           // 极近距离加权
     const myMob = getNeighborsFromState(state, pl.row, pl.col)
         .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col)).length;
     const oppMob = getNeighborsFromState(state, oppPl.row, oppPl.col)
         .filter(nb => !(nb.row === pl.row && nb.col === pl.col)).length;
     if (oppMob <= 1) score += (2 - oppMob) * 150;
     if (myMob <= 1) score -= (2 - myMob) * 120;
-    const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-    score += Math.max(0, 10 - distToOpp) * 15;
     const edgeDist = Math.min(pl.row, BOARD_SIZE - 1 - pl.row, pl.col, BOARD_SIZE - 1 - pl.col);
     if (edgeDist === 0) score -= 40;
     else if (edgeDist === 1) score -= 15;
@@ -799,10 +801,10 @@ function evaluateStateRaw(state, maxPlayer) {
 
     const myAct = countActions(state, p);
     const oppAct = countActions(state, opp);
-    score += (myAct - oppAct) * 6;
-    score += myAct * 2; // 绝对值奖励：行动空间越大越好
-    if (oppAct <= 8) score += (8 - oppAct) * 25;
-    if (myAct <= 8) score -= (8 - myAct) * 20;
+    score += (myAct - oppAct) * 10;                    // 行动数差：扩大优势、压缩对手
+    if (oppAct <= 8) score += (8 - oppAct) * 25;       // 对手行动枯竭
+    else if (oppAct <= 25) score += (25 - oppAct) * 8;  // 连续压缩奖励
+    if (myAct <= 8) score -= (8 - myAct) * 20;          // 自己行动枯竭
     // 直接邻居数用于极端情况的灵活性惩罚/奖励（1步内，比 countActions 更敏感）
     const myMob = getNeighborsFromState(state, pl.row, pl.col)
         .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col)).length;
@@ -819,7 +821,7 @@ function evaluateStateRaw(state, maxPlayer) {
         const aps = findArticulationPoints(state);
         if (aps.length <= 2) {
             const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-            score += Math.max(0, 10 - distToOpp) * 25;
+            score += Math.max(0, 12 - distToOpp) * 30;
             if (oppFullReach < myFullReach) score += (myFullReach - oppFullReach) * 15;
         }
 
@@ -828,7 +830,7 @@ function evaluateStateRaw(state, maxPlayer) {
             if (mandatoryCells.length > 0) {
                 const cell = mandatoryCells[0];
                 if (Number.isFinite(cell.distFromAI)) {
-                    score += Math.max(0, 10 - cell.distFromAI) * 35;
+                    score += Math.max(0, 12 - cell.distFromAI) * 40;
                     if (cell.distFromOpp > cell.distFromAI) score += (cell.distFromOpp - cell.distFromAI) * 25;
                 }
             }
@@ -837,7 +839,7 @@ function evaluateStateRaw(state, maxPlayer) {
         if (myFullReach < oppFullReach) {
             score += myReach3 * 8;
             const d2 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-            score += Math.max(0, 6 - d2) * 12;
+            score += Math.max(0, 8 - d2) * 15;
         }
         if (oppFullReach <= 15) {
             const d3 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
@@ -848,7 +850,7 @@ function evaluateStateRaw(state, maxPlayer) {
         // 奖励AI棋子靠近该通路入口（直面对手），防止对手蚕食AI领地
         if (oppReach3 <= 3 && myFullReach > oppFullReach) {
             const distToOpp2 = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-            score += Math.max(0, 8 - distToOpp2) * 40; // 靠近对手高奖励
+            score += Math.max(0, 10 - distToOpp2) * 45; // 残局猛推：靠近对手高奖励
             // 检测AI是否处于对手和AI区域之间的咽喉位置（AI面向对手方向有墙）
             const dirR = oppPl.row > pl.row ? 'top' : oppPl.row < pl.row ? 'bottom' : null;
             const dirC = oppPl.col > pl.col ? 'left' : oppPl.col < pl.col ? 'right' : null;
@@ -857,8 +859,10 @@ function evaluateStateRaw(state, maxPlayer) {
         }
     }
 
+    // 短距进攻奖励（与 evaluateStateLight 一致）
     const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
-    score += Math.max(0, 10 - distToOpp) * 15;
+    score += Math.max(0, 12 - distToOpp) * 22;
+    score += Math.max(0, 6 - distToOpp) * 30;
     if (distToOpp === 1) score -= 10;
 
     const dirToOppR = oppPl.row - pl.row;
@@ -984,7 +988,79 @@ function assessOpponentThreats(state, aiPlayer) {
 }
 
 function canOpponentWinInOne(state, aiPlayer) {
-    return assessOpponentThreats(state, aiPlayer).canWin;
+    return checkOpponentThreats(state, aiPlayer).canWin;
+}
+
+// 暴力枚举对手全部合法动作，检测能否一步杀 + 返回 AI 最坏面积
+// 与游戏引擎使用完全相同的 BFS 及动作生成逻辑，确保一致性
+function checkOpponentThreats(state, aiPlayer) {
+    const opp = 1 - aiPlayer;
+    const oppStart = { row: state.players[opp].row, col: state.players[opp].col };
+    const aiPl = state.players[aiPlayer];
+
+    // BFS 找对手可达格（3步内，排除 AI 所在格）
+    const reachable = [];
+    const visited = new Set([oppStart.row * BOARD_SIZE + oppStart.col]);
+    const queue = [{ row: oppStart.row, col: oppStart.col, steps: 0 }];
+    while (queue.length > 0) {
+        const cur = queue.shift();
+        reachable.push({ row: cur.row, col: cur.col, steps: cur.steps });
+        if (cur.steps >= 3) continue;
+        for (const nb of getNeighborsFromState(state, cur.row, cur.col)) {
+            if (nb.row === aiPl.row && nb.col === aiPl.col) continue;
+            const k = nb.row * BOARD_SIZE + nb.col;
+            if (!visited.has(k)) { visited.add(k); queue.push({ row: nb.row, col: nb.col, steps: cur.steps + 1 }); }
+        }
+    }
+
+    // 生成全部对手动作并逐一检查
+    const wallDirs = ['top','right','bottom','left'];
+    const wallPlaced = new Set();
+    let canWin = false;
+    let minAIArea = 49;
+    const savedOppRow = state.players[opp].row, savedOppCol = state.players[opp].col;
+
+    for (const target of reachable) {
+        for (const dir of wallDirs) {
+            if (state.board[target.row][target.col].walls[dir]) continue;
+            const oppDir = {top:'bottom', bottom:'top', left:'right', right:'left'}[dir];
+            const dr = {top:-1, bottom:1, left:0, right:0}[dir];
+            const dc = {top:0, bottom:0, left:-1, right:1}[dir];
+            const oppR = target.row + dr, oppC = target.col + dc;
+            if (!isInBounds(oppR, oppC) || state.board[oppR][oppC].walls[oppDir]) continue;
+            const wk = target.row+','+target.col+','+dir;
+            if (wallPlaced.has(wk)) continue;
+            wallPlaced.add(wk);
+
+            // 原地修改 state
+            state.board[target.row][target.col].walls[dir] = true;
+            state.board[oppR][oppC].walls[oppDir] = true;
+            state.players[opp].row = target.row; state.players[opp].col = target.col;
+
+            const [s0, s1, sep] = computeRegionsFromState(state);
+            if (sep) {
+                const score = (opp === 0) ? (s0 - s1) : (s1 - s0);
+                if (score > 0) {
+                    // 对手能赢，记录 AI 面积
+                    const aiA = (aiPlayer === 0) ? s0 : s1;
+                    if (aiA < minAIArea) minAIArea = aiA;
+                    canWin = true;
+                } else {
+                    // AI 赢（不可能，因为对手走完应该对手赢或至少不输）
+                    if ((aiPlayer === 0 ? s0 : s1) < minAIArea) minAIArea = (aiPlayer === 0 ? s0 : s1);
+                }
+            } else {
+                const aiA = bfsReachCount(state, aiPl.row, aiPl.col, target.row, target.col, 20);
+                if (aiA < minAIArea) minAIArea = aiA;
+            }
+
+            // 恢复 state
+            state.board[target.row][target.col].walls[dir] = false;
+            state.board[oppR][oppC].walls[oppDir] = false;
+            state.players[opp].row = savedOppRow; state.players[opp].col = savedOppCol;
+        }
+    }
+    return { canWin, minAIArea };
 }
 
 // 辅助：快速放墙
@@ -1325,7 +1401,7 @@ function aiSearch(depth) {
                 const c = cloneState(game);
                 c.players[p].row = a.target.row; c.players[p].col = a.target.col;
                 applyWall(c, a.target.row, a.target.col, a.dir);
-                if (assessOpponentThreats(c, p).canWin) return false;
+                if (checkOpponentThreats(c, p).canWin) return false;
                 a._cloned = c;
                 return true;
             });
@@ -1475,47 +1551,61 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
 
     // 从高分到低分依次做全新的安全检查，选第一个安全的
     let bestWin = null, bestWinMargin = -Infinity;
+    const fatalOptions = []; // { ci, minArea } 用于全灭时选最优自杀
+
     for (const { ci } of ranked) {
         const r = results[ci];
         if (!r || !r.path) continue;
         const act = candidates[ci];
 
-        // 全新克隆：从 game 原始状态出发，重新构建 AI 走完后的局面
         const verifyState = cloneState(game);
         verifyState.players[p].row = act.target.row;
         verifyState.players[p].col = act.target.col;
         applyWall(verifyState, act.target.row, act.target.col, act.dir);
 
-        // 检查 A：AI 走完是否直接隔离
+        // 检查 A：直接隔离
         const [v0, v1, vSep] = computeRegionsFromState(verifyState);
         if (vSep) {
             const vScore = (p === 0) ? (v0 - v1) : (v1 - v0);
             if (vScore > 0) {
-                // 能赢！但不急着返回，继续检查有没有面积差更大的赢法
                 if (vScore > bestWinMargin) {
                     bestWinMargin = vScore;
                     bestWin = { moves: r.path.slice(1), wallDir: act.dir };
                 }
                 continue;
             }
-            // 直接输，跳过
+            // 隔离且 AI 输 → 记录面积用于全灭选择
+            const lostArea = (p === 0) ? v0 : v1;
+            fatalOptions.push({ ci, minArea: lostArea });
             continue;
         }
 
-        // 检查 B：对手下一步能否立刻获胜
-        if (assessOpponentThreats(verifyState, p).canWin) continue; // 被一步杀，跳过
+        // 检查 B：对手能否一步杀
+        const oppThreat = checkOpponentThreats(verifyState, p);
+        if (oppThreat.canWin) {
+            fatalOptions.push({ ci, minArea: oppThreat.minAIArea });
+            continue;
+        }
 
-        // 安全！但如果已经有更好的赢棋，优先赢棋
+        // 安全！但若已有赢棋则跳过
         if (bestWin) continue;
-
-        // 无赢棋时返回第一个安全候选
         return { moves: r.path.slice(1), wallDir: act.dir };
     }
 
-    // 有赢棋就返回面积差最大的
+    // 有赢棋返回面积差最大的
     if (bestWin) return bestWin;
 
-    // 所有候选都会导致直接输或被一步杀：返回排名最高的（输得最少）
+    // 全灭：所有候选都会输。选 minArea 最大的（输得最少面积）
+    if (fatalOptions.length > 0) {
+        fatalOptions.sort((a, b) => b.minArea - a.minArea);
+        const { ci } = fatalOptions[0];
+        const r = results[ci];
+        if (r && r.path) {
+            return { moves: r.path.slice(1), wallDir: candidates[ci].dir };
+        }
+    }
+
+    // 兜底：返回排名最高的
     if (ranked.length > 0) {
         const { ci } = ranked[0];
         const r = results[ci];
