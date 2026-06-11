@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.3.8 2026/6/10   感谢游玩！
+        <br>版本信息：Version 2.3.9 2026/6/10   感谢游玩！
     </div>
 </div>
 <script>
@@ -761,25 +761,21 @@ function evaluateStateLight(state, maxPlayer) {
     if (sep) return ((maxPlayer === 0) ? (s0 - s1) : (s1 - s0)) * 1000;
     const p = maxPlayer, opp = 1 - p;
     const pl = state.players[p], oppPl = state.players[opp];
-    const mySize = (p === 0) ? s0 : s1;
-    const oppSize = (p === 0) ? s1 : s0;
     const myReach3 = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 3);
     const oppReach3 = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 3);
-    let score = (myReach3 - oppReach3) * 20 + (mySize - oppSize) * 40;
-    // 用 countActions 替代 countMobility：更全面反映行动空间
+    let score = (myReach3 - oppReach3) * 12;
     const myAct = countActions(state, p);
     const oppAct = countActions(state, opp);
-    score += (myAct - oppAct) * 3;
-    if (oppAct <= 8) score += (8 - oppAct) * 20;
-    if (myAct <= 8) score -= (8 - myAct) * 15;
-    // 保留直接邻居数的高敏感惩罚/奖励（1步灵活性，countActions 在极端情况下可能不够快）
+    score += (myAct - oppAct) * 6;
+    score += myAct * 2; // 绝对值奖励：行动空间越大越好
+    if (oppAct <= 8) score += (8 - oppAct) * 25;
+    if (myAct <= 8) score -= (8 - myAct) * 20;
     const myMob = getNeighborsFromState(state, pl.row, pl.col)
         .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col)).length;
     const oppMob = getNeighborsFromState(state, oppPl.row, oppPl.col)
         .filter(nb => !(nb.row === pl.row && nb.col === pl.col)).length;
     if (oppMob <= 1) score += (2 - oppMob) * 150;
     if (myMob <= 1) score -= (2 - myMob) * 120;
-    score += myReach3 * 5;
     const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
     score += Math.max(0, 10 - distToOpp) * 15;
     const edgeDist = Math.min(pl.row, BOARD_SIZE - 1 - pl.row, pl.col, BOARD_SIZE - 1 - pl.col);
@@ -799,14 +795,14 @@ function evaluateStateRaw(state, maxPlayer) {
 
     const myReach3 = bfsReachCount(state, pl.row, pl.col, oppPl.row, oppPl.col, 3);
     const oppReach3 = bfsReachCount(state, oppPl.row, oppPl.col, pl.row, pl.col, 3);
-    let score = (myReach3 - oppReach3) * 20 + (mySize - oppSize) * 40;
+    let score = (myReach3 - oppReach3) * 12;
 
-    // 用 countActions 替代 countMobility：3步内行动总数差
     const myAct = countActions(state, p);
     const oppAct = countActions(state, opp);
-    score += (myAct - oppAct) * 3;
-    if (oppAct <= 8) score += (8 - oppAct) * 20;
-    if (myAct <= 8) score -= (8 - myAct) * 15;
+    score += (myAct - oppAct) * 6;
+    score += myAct * 2; // 绝对值奖励：行动空间越大越好
+    if (oppAct <= 8) score += (8 - oppAct) * 25;
+    if (myAct <= 8) score -= (8 - myAct) * 20;
     // 直接邻居数用于极端情况的灵活性惩罚/奖励（1步内，比 countActions 更敏感）
     const myMob = getNeighborsFromState(state, pl.row, pl.col)
         .filter(nb => !(nb.row === oppPl.row && nb.col === oppPl.col)).length;
@@ -861,7 +857,6 @@ function evaluateStateRaw(state, maxPlayer) {
         }
     }
 
-    score += myReach3 * 5;
     const distToOpp = Math.abs(pl.row - oppPl.row) + Math.abs(pl.col - oppPl.col);
     score += Math.max(0, 10 - distToOpp) * 15;
     if (distToOpp === 1) score -= 10;
