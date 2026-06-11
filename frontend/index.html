@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.4.1 2026/6/10   感谢游玩！
+        <br>版本信息：Version 2.4.2 2026/6/11   感谢游玩！
     </div>
 </div>
 <script>
@@ -1039,19 +1039,12 @@ function checkOpponentThreats(state, aiPlayer) {
 
             const [s0, s1, sep] = computeRegionsFromState(state);
             if (sep) {
-                const score = (opp === 0) ? (s0 - s1) : (s1 - s0);
-                if (score > 0) {
-                    // 对手能赢，记录 AI 面积
-                    const aiA = (aiPlayer === 0) ? s0 : s1;
-                    if (aiA < minAIArea) minAIArea = aiA;
-                    canWin = true;
-                } else {
-                    // AI 赢（不可能，因为对手走完应该对手赢或至少不输）
-                    if ((aiPlayer === 0 ? s0 : s1) < minAIArea) minAIArea = (aiPlayer === 0 ? s0 : s1);
-                }
-            } else {
-                const aiA = bfsReachCount(state, aiPl.row, aiPl.col, target.row, target.col, 20);
+                // 仅从分隔动作追踪 AI 区域（无论胜负），
+                // 非分隔动作的 bfsReachCount 值与封闭区域大小量级不同，不混入
+                const aiA = (aiPlayer === 0) ? s0 : s1;
                 if (aiA < minAIArea) minAIArea = aiA;
+                const score = (opp === 0) ? (s0 - s1) : (s1 - s0);
+                if (score > 0) canWin = true;
             }
 
             // 恢复 state
@@ -1461,16 +1454,15 @@ function aiSearch(depth) {
         // 面积计算不排除对手：对手暂时挡路不算真正被封死
         const myAreaAfter = bfsReachCount(cloned, pl.row, pl.col, -1, -1, 49);
         const oppAreaAfter = bfsReachCount(cloned, cloned.players[opp].row, cloned.players[opp].col, -1, -1, 49);
-        // areaPenalty：AI面积极小时降低优先级
-        let areaPenalty = 0;
-        if (myAreaAfter <= 4) areaPenalty = 3000;
-        else if (myAreaAfter <= 6) areaPenalty = 1500;
-        else if (myAreaAfter <= 9) areaPenalty = (9 - myAreaAfter) * 200;
-        // selfBlockPenalty：AI面积减少时惩罚；若对手面积也同等减少（封的是无人空区），大幅减弱惩罚
+        // selfBlockPenalty：AI面积单方面减少时的惩罚
+        // 向对手推进中面积缩小是进入前线争夺，非自我封闭，免除惩罚
+        const distBefore = Math.abs(start.row - oppStart.row) + Math.abs(start.col - oppStart.col);
+        const distAfter = Math.abs(pl.row - cloned.players[opp].row) + Math.abs(pl.col - cloned.players[opp].col);
+        const advancing = distAfter < distBefore;
         const myLoss = Math.max(0, myFullReach - myAreaAfter);
         const oppLoss = Math.max(0, oppFullReach - oppAreaAfter);
-        const netLoss = Math.max(0, myLoss - oppLoss); // 只惩罚 AI 单方面减少的部分
-        const selfBlockPenalty = netLoss * 20;
+        const netLoss = Math.max(0, myLoss - oppLoss);
+        const selfBlockPenalty = advancing ? 0 : netLoss * 10;
         // 伪死路惩罚：当存在真实通路时，降低进入伪死路方向的候选优先级
         let pseudoPenalty = 0;
         if (pathAnalysis && pathAnalysis.hasRealPath && pseudoDeadEntries) {
@@ -1485,7 +1477,7 @@ function aiSearch(depth) {
             if (distActToForced < distStartToForced) forcedBonus = 80;
         }
         const evalScore = useFullEval ? evaluateStateCached(cloned, p) : evaluateStateLight(cloned, p);
-        act._score = evalScore + act.moveSteps * 30 - selfBlockPenalty - areaPenalty - pseudoPenalty + forcedBonus;
+        act._score = evalScore + act.moveSteps * 30 - selfBlockPenalty - pseudoPenalty + forcedBonus;
         act._cloned = cloned;
     }
     actions.sort((a, b) => b._score - a._score);
