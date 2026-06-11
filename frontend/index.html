@@ -441,7 +441,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.3.6 2026/6/9   感谢游玩！
+        <br>版本信息：Version 2.3.8 2026/6/10   感谢游玩！
     </div>
 </div>
 <script>
@@ -1432,11 +1432,9 @@ function aiSearch(depth) {
 }
 
 function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, sendProgress) {
-    let bestScore = -Infinity;
-    let bestAction = null;
     const total = candidates.length;
 
-    // Pass 1：完整评估所有候选，不做 alpha 截断
+    // Pass 1：完整评估所有候选
     const results = [];
     for (let ci = 0; ci < total; ci++) {
         const act = candidates[ci];
@@ -1447,26 +1445,11 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
             return c;
         })();
         const path = findShortestPath(start, act.target, p, cloned);
-        if (!path) { results.push(null); continue; }
+        if (!path) { results.push(null); if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total }); continue; }
         const [s0, s1, sep] = computeRegionsFromState(cloned);
         if (sep) {
             const score = (p === 0) ? (s0 - s1) : (s1 - s0);
-            results.push({ path, score, immediate: true });
-            if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
-            continue;
-        }
-        // myAreaNow：AI落点出发，纯墙限制的可达格数（不排除对手，对手挡路只是暂时的）
-        const myAreaNow = bfsReachCount(cloned, act.target.row, act.target.col, -1, -1, 49);
-        // 自己走进极小封闭区域（≤4格，基于纯墙连通性）才视为自杀
-        if (myAreaNow <= 4) {
-            results.push({ path, score: -5000 + myAreaNow * 100, suicide: true });
-            if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
-            continue;
-        }
-        const threats = assessOpponentThreats(cloned, p);
-        // 对手下一步可立刻赢 → 标为 suicide（最后备选）
-        if (threats.canWin) {
-            results.push({ path, score: -4800 + myAreaNow * 80, suicide: true });
+            results.push({ path, score, sep: true });
             if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
             continue;
         }
@@ -1476,80 +1459,74 @@ function runSearch(candidates, searchDepth, p, start, oppStart, forcedStep, send
         } else {
             score = evaluateStateRaw(cloned, p);
         }
-        results.push({ path, score, oppCanWin: false, minAIArea: threats.minAIArea, myArea: myAreaNow });
+        results.push({ path, score, sep: false });
         if (sendProgress) self.postMessage({ type: 'progress', value: (ci + 1) / total });
     }
 
-    // Pass 2：打分、排序，然后按顺序找第一个"不会立即输/被一步杀"的候选
-    // "立即输" = sep=true 且 AI 面积小；"被一步杀" = threats.canWin = true
-    // 两者等价：均打极低分 = -10000 + myArea * 100，按面积决定相对优劣
-
-    // 先立即返回分离且 AI 赢的情况
-    for (let ci = 0; ci < total; ci++) {
-        const r = results[ci];
-        if (r && r.immediate && r.score > 0) {
-            return { moves: r.path.slice(1), wallDir: candidates[ci].dir };
-        }
-    }
-
-    const validResults = results.filter(r => r && !r.immediate && !r.suicide);
-    const bestMinAIArea = validResults.reduce((m, r) => Math.max(m, r.minAIArea || 49), 0);
-    const bestMyArea = validResults.reduce((m, r) => Math.max(m, r.myArea || 49), 0);
-
-    // 给每个候选计算最终得分
-    const scored = [];
+    // Pass 2：按分排序后，对每个候选做全新的独立安全检查
+    // 安全定义：走完后 (a) 不会立即被隔离且面积更小，(b) 对手下一步无法立刻获胜
+    const ranked = [];
     for (let ci = 0; ci < total; ci++) {
         const r = results[ci];
         if (!r) continue;
-        let score;
-        let isFatal = false; // 标记"立即输"或"被一步杀"
-        let fatalArea = 0;   // fatal 时的 AI 面积，用于相对比较
-        if (r.immediate) {
-            if (r.score > 0) continue; // 已在上面处理
-            // sep=true，AI 面积小：立即输
-            // r.score = aiArea - oppArea（负数），从中还原 aiArea 不直接，直接用 myAreaNow 近似
-            // 用 -10000 + (aiArea) * 100，aiArea ≈ (r.score + oppArea)/2 但我们不知道 oppArea
-            // 简化：r.score 已经反映面积差，直接 -10000 + r.score（r.score 越大越好，即面积差越大）
-            isFatal = true;
-            fatalArea = r.score; // 负的面积差，越大越好
-            score = -10000 + r.score;
-        } else if (r.suicide) {
-            // suicide: myAreaNow <= 4 => -10000 + myAreaNow*100; threats.canWin => -10000 + myAreaNow*100
-            isFatal = true;
-            fatalArea = r.score; // 已经是 -5000+area*100 或 -4800+area*80，用原值作为相对比较
-            score = -10000 + (r.score + 10000) * 0.01; // 压到 -10000 附近，保留相对顺序
-        } else {
-            score = r.score;
-            if (r.minAIArea !== undefined && r.minAIArea <= 5 && bestMinAIArea > 5) {
-                const penalty = r.minAIArea <= 2 ? 3800 : r.minAIArea <= 4 ? 2800 : 1800;
-                score = -penalty + r.score * 0.01;
-            } else if (r.myArea !== undefined && r.myArea <= 8 && bestMyArea > 8) {
-                const penalty = r.myArea <= 4 ? 2000 : r.myArea <= 6 ? 1200 : 600;
-                score = -penalty + r.score * 0.01;
-            } else if (r.minAIArea !== undefined && r.minAIArea <= 10 && bestMinAIArea > 10) {
-                const penalty = r.minAIArea <= 7 ? 1000 : 500;
-                score = r.score - penalty;
-            }
+        let rankScore = r.score;
+        // sep=true 且 AI 输：强制最低分；sep=true 且 AI 赢：已在上层 aiSearch 一步杀检测里处理，这里压低但不排除
+        if (r.sep) {
+            rankScore = r.score > 0 ? 99999 : -100000 + r.score;
         }
-        scored.push({ ci, score, isFatal });
+        ranked.push({ ci, rankScore });
     }
+    ranked.sort((a, b) => b.rankScore - a.rankScore);
 
-    // 按得分从高到低排序
-    scored.sort((a, b) => b.score - a.score);
-
-    // 依次找第一个不会立即输/被一步杀的候选
-    for (const { ci, isFatal } of scored) {
-        if (isFatal) continue;
-        const act = candidates[ci];
+    // 从高分到低分依次做全新的安全检查，选第一个安全的
+    let bestWin = null, bestWinMargin = -Infinity;
+    for (const { ci } of ranked) {
         const r = results[ci];
+        if (!r || !r.path) continue;
+        const act = candidates[ci];
+
+        // 全新克隆：从 game 原始状态出发，重新构建 AI 走完后的局面
+        const verifyState = cloneState(game);
+        verifyState.players[p].row = act.target.row;
+        verifyState.players[p].col = act.target.col;
+        applyWall(verifyState, act.target.row, act.target.col, act.dir);
+
+        // 检查 A：AI 走完是否直接隔离
+        const [v0, v1, vSep] = computeRegionsFromState(verifyState);
+        if (vSep) {
+            const vScore = (p === 0) ? (v0 - v1) : (v1 - v0);
+            if (vScore > 0) {
+                // 能赢！但不急着返回，继续检查有没有面积差更大的赢法
+                if (vScore > bestWinMargin) {
+                    bestWinMargin = vScore;
+                    bestWin = { moves: r.path.slice(1), wallDir: act.dir };
+                }
+                continue;
+            }
+            // 直接输，跳过
+            continue;
+        }
+
+        // 检查 B：对手下一步能否立刻获胜
+        if (assessOpponentThreats(verifyState, p).canWin) continue; // 被一步杀，跳过
+
+        // 安全！但如果已经有更好的赢棋，优先赢棋
+        if (bestWin) continue;
+
+        // 无赢棋时返回第一个安全候选
         return { moves: r.path.slice(1), wallDir: act.dir };
     }
-    // 所有候选都是 fatal：选面积最大的（输得最少）
-    if (scored.length > 0) {
-        const { ci } = scored[0]; // 已按 score 排序，第一个 fatal 分最高即面积最大
-        const act = candidates[ci];
+
+    // 有赢棋就返回面积差最大的
+    if (bestWin) return bestWin;
+
+    // 所有候选都会导致直接输或被一步杀：返回排名最高的（输得最少）
+    if (ranked.length > 0) {
+        const { ci } = ranked[0];
         const r = results[ci];
-        return { moves: r.path.slice(1), wallDir: act.dir };
+        if (r && r.path) {
+            return { moves: r.path.slice(1), wallDir: candidates[ci].dir };
+        }
     }
     return null;
 }
