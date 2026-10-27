@@ -1,6 +1,9 @@
-# 开启跨源隔离（crossOriginIsolated），解锁 SharedArrayBuffer -> WASM 多线程推理
-# 语法参考 Netlify，Zeabur 静态服务（Caddy）会在项目根目录读取本文件
-# 本页面无任何跨源子资源（只有同源 favicon.ico 与内联脚本），故 require-corp 安全
 /*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+/
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+/index.html
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
