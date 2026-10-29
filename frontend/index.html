@@ -539,7 +539,7 @@
                 <button class="rp-btn" id="rpViewRed">视角：红方</button>
                 <button class="rp-btn" id="rpViewBlue">蓝方</button>
             </div>
-            <div class="rp-sub" id="rpSugHead">通玄首选</div>
+            <div class="rp-sub" id="rpSugHead">xuantian 01 首选</div>
             <div class="rp-list" id="rpMoves">—</div>
             <div class="rp-actual" id="rpActual"></div>
             <div class="rp-nav">
@@ -633,7 +633,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.3 2026-10-30  感谢游玩~
+        <br>版本信息：Version 3.1.4 2026-10-30  感谢游玩~
     </div>
 </div>
 <script>
@@ -1821,7 +1821,10 @@ self.onmessage = function(e) {
     }
 
     // ---- 通玄（NN）Web Worker ----
-    // 对外品牌「通玄系列」= 内部训练产物；权重 frontend/models/tongxuan_v1.onnx（gen007A3）。
+    // 「通玄」是**难度名**（难度按钮上那一个字），模型对外一律叫 NN_NAME（当前 = 第 1 代，内部产物 gen007A3）。
+    // 换代时改这里 + nn_worker.js 里的同名常量（两处，Worker 是独立作用域拿不到页面的）；
+    // 权重文件名不参与（tongxuan_v1.onnx 是历史名，保留；下一个晋升进来的模型才叫 xuantian_02.onnx）。
+    const NN_NAME = 'xuantian 01';
     // 失败必须"可见 + 快"：Worker 静默死掉 = 进度条不涨 + AI 永不落子，是最坏的体验。
     // 因此：创建即探测（ping 4 秒无回音 = 脚本没跑起来），加载状态写进页面上的 #tongxuanInfo。
     let nnWorker = null;
@@ -1846,7 +1849,7 @@ self.onmessage = function(e) {
         el.className = 'tx-info ' + (cls || '');
     }
     function nnTierText(i) {
-        return `通玄·${i.tier.replace('通玄·', '')} ${i.simsMax}访/手 ≤${(i.budgetMs / 1000).toFixed(1)}s ` +
+        return `${NN_NAME}·${i.tier} ${i.simsMax}访/手 ≤${(i.budgetMs / 1000).toFixed(1)}s ` +
                `${i.threads}线程${i.isolated ? '' : '(无跨源隔离,单线程)'} ${(i.msPerSim)}ms/访`;
     }
     function nnStopRamp() { if (nnRamp) { clearInterval(nnRamp); nnRamp = null; } }
@@ -1860,7 +1863,7 @@ self.onmessage = function(e) {
         }, 300);
     }
 
-    // 通玄不可用 -> 本手交回旧 AI，难度选择同步回「大师」（战绩归属不能作假），页面上留话
+    // 模型不可用 -> 本手交回旧 AI，难度选择同步回「大师」（战绩归属不能作假），页面上留话
     function nnDegradeUI(reason) {
         nnDisabled = true;
         nnStopRamp();
@@ -1870,9 +1873,9 @@ self.onmessage = function(e) {
         }
         const why = reason || '未知原因';
         nnWhy = why;
-        nnBadge('通玄不可用：' + why.slice(0, 140), 'tx-bad', why);
-        statusMessage.textContent = '⚠ 通玄不可用，本局改用大师';
-        console.warn('[通玄] 回退大师:', reason);
+        nnBadge(NN_NAME + ' 不可用：' + why.slice(0, 140), 'tx-bad', why);
+        statusMessage.textContent = '⚠ ' + NN_NAME + ' 不可用，本局改用大师';
+        console.warn('[xuantian] 回退大师:', reason);
     }
     function nnFailNow(reason) {
         const a = nnAbort; nnAbort = null;
@@ -1887,7 +1890,7 @@ self.onmessage = function(e) {
     let nnJobSeq = 1e9;   // 对局 id 从 1 递增，复盘 id 从 1e9 递增，互不串台
     function nnAsk(kind, payload, timeoutMs, onPartial) {
         return getNNWorker().then(worker => {
-            if (!worker) throw new Error(nnWhy || '通玄不可用');
+            if (!worker) throw new Error(nnWhy || (NN_NAME + ' 不可用'));
             const id = ++nnJobSeq;
             return new Promise((res, rej) => {
                 const timer = setTimeout(() => {
@@ -1924,12 +1927,12 @@ self.onmessage = function(e) {
         if (m.type === 'analysis' || m.type === 'suggestion') { nnResolveJob(m); return; }
         if (m.type !== 'status') return;
         if (m.phase === 'loading') {
-            nnBadge('通玄加载中：ONNX 运行时 + 权重 约 19 MB（只需一次）…', 'tx-warn');
-            statusMessage.textContent = '🧠 通玄首次加载中（约 19 MB，只需一次）…';
+            nnBadge(NN_NAME + ' 加载中：ONNX 运行时 + 权重 约 19 MB（只需一次）…', 'tx-warn');
+            statusMessage.textContent = '🧠 ' + NN_NAME + ' 首次加载中（约 19 MB，只需一次）…';
         } else if (m.phase === 'ready') {
             nnReady = true; nnInfo = m.info;
             nnBadge(nnTierText(m.info), 'tx-ok');
-            console.log('[通玄] 就绪', m.info);
+            console.log('[xuantian] 就绪', m.info);
         } else if (m.phase === 'failed') {
             nnFailNow(m.message);
         }
@@ -1937,7 +1940,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v5';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v6';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -1996,7 +1999,7 @@ self.onmessage = function(e) {
         if (nnWorker) return Promise.resolve(nnWorker);
         if (nnLoading) return nnLoading;
         nnAlive = false;
-        nnBadge('通玄加载中…（前端 ' + NN_REV + '，内联模式）', 'tx-warn');
+        nnBadge(NN_NAME + ' 加载中…（前端 ' + NN_REV + '，内联模式）', 'tx-warn');
         nnLoading = nnCreateWorker().then(w => {
             nnLoading = null;
             nnWorker = w;
@@ -2050,16 +2053,16 @@ self.onmessage = function(e) {
                 if (msg.type === 'error') { nnFailNow(msg.message); return; }
                 detach();
                 if (msg.meta) {
-                    console.log('[通玄] 本手', msg.meta);
+                    console.log('[xuantian] 本手', msg.meta);
                     if (nnInfo) {
                         const why = msg.meta.why ? ' · ' + msg.meta.why : '';
-                        nnBadge(`${nnInfo.tier} 上一手 ${msg.meta.sims}访问/${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
+                        nnBadge(`${NN_NAME}·${nnInfo.tier} 上一手 ${msg.meta.sims}访问/${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
                     }
                 }
                 onResult({ data: { type: 'result', value: msg.value } });
             };
             worker.onerror = function (err) {
-                console.error('通玄 Worker error:', err && err.message);
+                console.error('xuantian worker error:', err && err.message);
                 nnFailNow('worker-error');
             };
             worker.postMessage({ state: stateCopy, id: myId });
@@ -2736,10 +2739,10 @@ self.onmessage = function(e) {
         }
     }
 
-    // ==================== 复盘分析（通玄判读）====================
+    // ==================== 复盘分析（模型判读）====================
     /*
      * frames[k] = 第 k 个"轮到谁"的局面，move = 从这一局面上实际走的那一手（终局帧为 null）。
-     * 于是看第 k 帧时：通玄首选 = 从 frames[k] 搜出来的前三手（点哪一行就按哪一行画盘），
+     * 于是看第 k 帧时：模型首选 = 从 frames[k] 搜出来的前三手（点哪一行就按哪一行画盘），
      * values[k] 也是 frames[k] 的判读结果（{solved,rn,rw,rc,over,tn,tw,td}）。
      * 两个读数同源：同一批随机推演（rw = 胜 1 / 和 0.5 / 负 0 的均值 ⇒ 胜率，rc = 终局面积差的均值
      * ⇒ 期望最终面积差），左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
@@ -3018,7 +3021,7 @@ self.onmessage = function(e) {
         rpRetry.style.display = 'none';
         replay.values = new Array(replay.frames.length).fill(null);
         seedTerminalFrames();
-        setSub(nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载') + '（走法回顾不受影响）') : '整局判读中…');
+        setSub(nnDisabled ? (NN_NAME + ' 不可用：' + (nnWhy || '未加载') + '（走法回顾不受影响）') : '整局判读中…');
         renderReplayPanel();
         drawBars();
         drawCurve();
@@ -3054,8 +3057,8 @@ self.onmessage = function(e) {
         const seq = replay.seq;
         if (nnDisabled) {
             replay.sug = null;
-            rpMoves.textContent = '通玄不可用：' + (nnWhy || '未加载');
-            rpSugHead.textContent = '通玄首选';
+            rpMoves.textContent = NN_NAME + ' 不可用：' + (nnWhy || '未加载');
+            rpSugHead.textContent = NN_NAME + ' 首选';
             return;
         }
         // 不写"本手评估中…"清空旧行：上一帧的结果留着，新结果算好后整块替换（避免闪空白 + 高度跳动）
@@ -3111,16 +3114,16 @@ self.onmessage = function(e) {
         if (!rpMoves) return;
         const cur = replay.frames[replay.idx];
         if (cur && cur.state.gameOver) {
-            rpSugHead.textContent = '通玄首选';
+            rpSugHead.textContent = NN_NAME + ' 首选';
             rpMoves.textContent = '这一帧棋已经终局，没有下一手可评；点「上一手」看模型怎么选。';
             return;
         }
         if (!suggestionsFresh()) {
             // 只留"真的算出来过"的行；上一帧若是句说明文字（终局/无数据），留着它再说「重算中」会自相矛盾
-            if (rpMoves.querySelector('.rp-move')) rpSugHead.textContent = '通玄首选（本手重算中…）';
+            if (rpMoves.querySelector('.rp-move')) rpSugHead.textContent = NN_NAME + ' 首选（本手重算中…）';
             else {
-                rpSugHead.textContent = '通玄首选';
-                rpMoves.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载')) : '本手评估中…';
+                rpSugHead.textContent = NN_NAME + ' 首选';
+                rpMoves.textContent = nnDisabled ? (NN_NAME + ' 不可用：' + (nnWhy || '未加载')) : '本手评估中…';
             }
             return;
         }
@@ -3128,6 +3131,8 @@ self.onmessage = function(e) {
         const s = replay.sug;
         const meta = s.meta || null;
         if (!meta) {
+            // 每条早退分支都得自己把标题写掉：不然它会一直停在上一帧的「本手重算中…」，永远不落地
+            rpSugHead.textContent = NN_NAME + ' 首选';
             const d = document.createElement('div');
             d.className = 'rp-move';
             d.textContent = '模型没有回出这一手的搜索数据';
@@ -3136,6 +3141,9 @@ self.onmessage = function(e) {
             return;
         }
         if (!meta.top) {
+            // 规则直接判定的那一手（一步制胜/只有一手不送杀/必输救面积/兜底）压根没跑搜索，
+            // 没有访问数可报 —— 标题要说清"这不是在算，是规则定的"
+            rpSugHead.textContent = NN_NAME + ' 首选（规则判定 · 没跑搜索）';
             const d = document.createElement('div');
             d.className = 'rp-move';
             d.textContent = RP_WHY[meta.why] || ('规则判定：' + meta.why);
@@ -3143,7 +3151,7 @@ self.onmessage = function(e) {
             rpMoves.appendChild(d);
             return;
         }
-        rpSugHead.textContent = '通玄首选（' + meta.sims + ' 访问 / ' + meta.ms + 'ms）· 点一行看它怎么走';
+        rpSugHead.textContent = NN_NAME + ' 首选（' + meta.sims + ' 访问 / ' + meta.ms + 'ms）· 点一行看它怎么走';
         const f = replay.frames[replay.idx];
         const actualId = f && f.move ? moveActionId(f.move) : -1;
         const MARKS = '①②③④⑤';

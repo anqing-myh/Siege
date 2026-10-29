@@ -1,6 +1,6 @@
 /*
- * 「通玄」难度 Worker：浏览器内 ONNX 推理 + PUCT 搜索。
- * 对外品牌 = 通玄系列；权重文件 models/tongxuan_v1.onnx 即内部训练产物 gen007A3。
+ * 「通玄」难度档的 Worker：浏览器内 ONNX 推理 + PUCT 搜索。（「通玄」是难度名，模型对外叫 xuantian NN）
+ * 权重文件 models/tongxuan_v1.onnx 即内部训练产物 gen007A3 = 对外的 xuantian 01。
  *
  * 协议：与旧 AI Worker 兼容——收 { state, depth, id }，回 { type:'result', value:{moves,wallDir} }。
  * 追加：{type:'status', phase:'loading'|'ready'|'failed', info}、{type:'error', message}、
@@ -23,7 +23,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v5';
+const REV = 'v6';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -62,12 +62,15 @@ if (!loadError && (!E || !NN || typeof ort === 'undefined')) {
 
 const MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test((self.navigator && navigator.userAgent) || '');
 
-// 档位：按标定到的 ms/访问（含树开销）从上往下取第一个满足的档
+// 模型对外名（换代时和 index.html 里的 NN_NAME 一起改：Worker 是独立作用域，拿不到页面那个）
+const NN_NAME = 'xuantian 01';
+// 档位：按标定到的 ms/访问（含树开销）从上往下取第一个满足的档。
+// 这里只报档位，不报模型名 —— 徽章上的「xuantian 01·极」由页面拼，名字只有一处定义。
 const TIERS = [
-    { name: '通玄·极', maxMsPerSim: 3,   budgetMs: 3000, simsMax: 1500 },
-    { name: '通玄·高', maxMsPerSim: 8,   budgetMs: 2600, simsMax: 700 },
-    { name: '通玄·中', maxMsPerSim: 20,  budgetMs: 2600, simsMax: 320 },
-    { name: '通玄·初', maxMsPerSim: 1e9, budgetMs: 2400, simsMax: 140 }
+    { name: '极', maxMsPerSim: 3,   budgetMs: 3000, simsMax: 1500 },
+    { name: '高', maxMsPerSim: 8,   budgetMs: 2600, simsMax: 700 },
+    { name: '中', maxMsPerSim: 20,  budgetMs: 2600, simsMax: 320 },
+    { name: '初', maxMsPerSim: 1e9, budgetMs: 2400, simsMax: 140 }
 ];
 
 let net = null;
@@ -205,7 +208,7 @@ self.onmessage = function (e) {
         return;
     }
     if (initFailed) {
-        const msg = '通玄不可用（已初始化失败）';
+        const msg = NN_NAME + ' 不可用（已初始化失败）';
         send({ type: analyze ? 'analysis' : suggest ? 'suggestion' : 'error', id, message: msg, error: msg });
         return;
     }
