@@ -3,7 +3,8 @@
  * 对外品牌 = 通玄系列；权重文件 models/tongxuan_v1.onnx 即内部训练产物 gen007A3。
  *
  * 协议：与旧 AI Worker 兼容——收 { state, depth, id }，回 { type:'result', value:{moves,wallDir} }。
- * 追加：{type:'status', phase:'loading'|'ready'|'failed', info}、{type:'error', message}。
+ * 追加：{type:'status', phase:'loading'|'ready'|'failed', info}、{type:'error', message}、
+ *       {ping:true} -> {type:'pong', script, deps, loadError}（主线程用它 3 秒内判定 Worker 是否活着）。
  * depth 对本 Worker 无意义（NN 用时间预算），收到后忽略。
  *
  * 自适应：初始化时用一次真实搜索标定 ms/访问，据此选档位（budgetMs / simsMax），
@@ -17,12 +18,27 @@
 
 const REV = 'v1';
 const MODEL_URL = `models/tongxuan_v1.onnx?rev=${REV}`;
+const DEPS = [`ort/ort.wasm.min.js?rev=${REV}`, `siege_engine.js?rev=${REV}`, `nn_ai.js?rev=${REV}`];
 
-importScripts(`ort/ort.wasm.min.js?rev=${REV}`, `siege_engine.js?rev=${REV}`, `nn_ai.js?rev=${REV}`);
+const send = (m) => self.postMessage(m);
 
+// importScripts 抛错（子资源 404 / Content-Type 不是 JS / 被 COEP 拦）默认会让整个 Worker 静默死掉，
+// 主线程一条消息都收不到，表现就是"AI 永远思考中"。逐个包一层：哑死变成可回话、可显示的失败，
+// 并且能说清到底是哪一个文件在托管端挂掉（用户看不到 console，只能靠徽章上的文件名）。
+let loadError = null;
+for (const dep of DEPS) {
+    try {
+        importScripts(dep);
+    } catch (err) {
+        loadError = `${dep.split('?')[0]} 加载失败：` + ((err && err.message) || String(err));
+        break;
+    }
+}
 const E = self.SiegeEngine;
 const NN = self.NnAI;
-const send = (m) => self.postMessage(m);
+if (!loadError && (!E || !NN || typeof ort === 'undefined')) {
+    loadError = '依赖未挂载：' + ['ort=' + typeof ort, 'SiegeEngine=' + typeof E, 'NnAI=' + typeof NN].join(' ');
+}
 
 const MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test((self.navigator && navigator.userAgent) || '');
 
@@ -95,18 +111,26 @@ async function think(state, id) {
 }
 
 self.onmessage = function (e) {
-    const { state, id } = e.data || {};
+    const { state, id, ping, warmup } = e.data || {};
+    if (ping) {
+        send({ type: 'pong', script: 'nn_worker.js', deps: DEPS.length, loadError });
+        return;
+    }
+    if (loadError) {
+        send({ type: 'status', phase: 'failed', message: loadError });
+        if (state) send({ type: 'error', id, message: loadError });
+        return;
+    }
     if (initFailed) { send({ type: 'error', id, message: '通玄不可用（已初始化失败）' }); return; }
     if (!initPromise) {
         initPromise = init().catch(err => {
             initFailed = true;
             const message = (err && err.message) || String(err);
             send({ type: 'status', phase: 'failed', message });
-            send({ type: 'error', message });
             throw err;
         });
     }
-    if (!state) return;
+    if (warmup || !state) { initPromise.catch(() => { }); return; }
     initPromise.then(() => think(state, id)).catch(err => {
         send({ type: 'error', id, message: (err && err.message) || String(err) });
     });

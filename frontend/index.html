@@ -213,10 +213,16 @@
         #difficultyRow {
             display: flex;
             align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
             gap: 10px;
             font-size: 14px;
             color: #c7a77d;
         }
+        .tx-info { font-size: 12px; opacity: 0.9; max-width: 100%; }
+        .tx-ok { color: #8fd08f; }
+        .tx-warn { color: #e0c080; }
+        .tx-bad { color: #e08a8a; }
         .diff-btn {
             background: #5a4a3a;
             border: none;
@@ -419,6 +425,7 @@
             <button class="diff-btn active" data-diff="expert">专家</button>
             <button class="diff-btn" data-diff="master">大师</button>
             <button class="diff-btn" data-diff="tongxuan">通玄</button>
+            <span id="tongxuanInfo" class="tx-info" style="display:none"></span>
         </div>
     </div>
     <div id="bottomBar">
@@ -1627,84 +1634,149 @@ self.onmessage = function(e) {
 
     // ---- 通玄（NN）Web Worker ----
     // 对外品牌「通玄系列」= 内部训练产物；权重 frontend/models/tongxuan_v1.onnx（gen007A3）。
-    // 任何环节失败都自动回退旧 AI（大师），绝不让 AI 回合卡死。
+    // 失败必须"可见 + 快"：Worker 静默死掉 = 进度条不涨 + AI 永不落子，是最坏的体验。
+    // 因此：创建即探测（ping 4 秒无回音 = 脚本没跑起来），加载状态写进页面上的 #tongxuanInfo。
     let nnWorker = null;
     let nnReady = false;
     let nnDisabled = false;
     let nnInfo = null;
     let nnToken = 0;
     let nnWatchdog = null;
-    const NN_HARD_WAIT_READY = 12000;   // 已就绪后单手硬超时
-    const NN_HARD_WAIT_LOAD = 120000;   // 首次下载 ORT+权重（约 20 MB）的硬超时
+    let nnAbort = null;       // 本手的回退动作，由 startNNTurn 注册；探测失败时也能触发
+    let nnRamp = null;        // 加载/思考期间让进度条缓慢爬升的心跳
+    const NN_PING_MS = 4000;              // Worker 脚本是否活着
+    const NN_HARD_WAIT_READY = 12000;     // 已就绪后单手硬超时
+    const NN_HARD_WAIT_LOAD = 120000;     // 首次下载 ORT+权重（约 19 MB）的硬超时
 
-    function getNNWorker() {
-        if (nnDisabled) return null;
-        if (nnWorker) return nnWorker;
-        try {
-            nnWorker = new Worker('nn_worker.js');
-        } catch (err) {
-            console.error('通玄 Worker 创建失败:', err);
-            nnDisabled = true;
-            return null;
-        }
-        return nnWorker;
+    function nnBadge(text, cls, full) {
+        const el = document.getElementById('tongxuanInfo');
+        if (!el) return;
+        el.style.display = '';
+        el.textContent = text;
+        el.title = full || text;
+        el.className = 'tx-info ' + (cls || '');
+    }
+    function nnTierText(i) {
+        return `通玄·${i.tier.replace('通玄·', '')} ${i.simsMax}访/手 ≤${(i.budgetMs / 1000).toFixed(1)}s ` +
+               `${i.threads}线程${i.isolated ? '' : '(无跨源隔离,单线程)'} ${(i.msPerSim)}ms/访`;
+    }
+    function nnStopRamp() { if (nnRamp) { clearInterval(nnRamp); nnRamp = null; } }
+    function nnStartRamp() {
+        nnStopRamp();
+        let p = 0.05;
+        setAIProgress(p);
+        nnRamp = setInterval(() => {
+            p = Math.min(0.92, p + (0.92 - p) * 0.06 + 0.003);
+            setAIProgress(p);
+        }, 300);
     }
 
-    // 通玄不可用 -> 本局按「大师」继续，并把难度选择同步回大师，避免战绩归属失真
-    // （用户再点一次「通玄」即重试加载）
-    function degradeFromTongxuan(reason) {
+    // 通玄不可用 -> 本手交回旧 AI，难度选择同步回「大师」（战绩归属不能作假），页面上留话
+    function nnDegradeUI(reason) {
         nnDisabled = true;
+        nnStopRamp();
         if (aiDifficulty === 'tongxuan') {
             aiDifficulty = 'master';
             diffBtns.forEach(b => b.classList.toggle('active', b.dataset.diff === 'master'));
         }
-        statusMessage.textContent = '⚠ 通玄暂不可用，已切换为大师';
+        const why = (reason || '未知原因').replace(/^nn_worker\.js /, '');
+        nnBadge('通玄不可用：' + why.slice(0, 90), 'tx-bad', reason || '未知原因');
+        statusMessage.textContent = '⚠ 通玄不可用，本局改用大师';
         console.warn('[通玄] 回退大师:', reason);
+    }
+    function nnFailNow(reason) {
+        const a = nnAbort; nnAbort = null;
+        if (a) a();
+        else nnDegradeUI(reason);
+    }
+
+    function nnPersistentListener(e) {
+        const m = e.data || {};
+        if (m.type === 'pong') { nnAlive = true; return; }
+        if (m.type !== 'status') return;
+        if (m.phase === 'loading') {
+            nnBadge('通玄加载中：ONNX 运行时 + 权重 约 19 MB（只需一次）…', 'tx-warn');
+            statusMessage.textContent = '🧠 通玄首次加载中（约 19 MB，只需一次）…';
+        } else if (m.phase === 'ready') {
+            nnReady = true; nnInfo = m.info;
+            nnBadge(nnTierText(m.info), 'tx-ok');
+            console.log('[通玄] 就绪', m.info);
+        } else if (m.phase === 'failed') {
+            nnFailNow(m.message);
+        }
+    }
+
+    let nnAlive = false;
+    let nnPingWatchdog = null;
+    function getNNWorker() {
+        if (nnDisabled) return null;
+        if (nnWorker) return nnWorker;
+        nnAlive = false;
+        try {
+            nnWorker = new Worker('nn_worker.js');
+        } catch (err) {
+            nnDegradeUI('无法创建 Worker：' + ((err && err.message) || err) + '（页面需通过 http(s) 访问）');
+            return null;
+        }
+        nnWorker.addEventListener('message', nnPersistentListener);
+        nnWorker.addEventListener('error', ev => {
+            nnDegradeUI('nn_worker.js 脚本异常：' + ((ev && ev.message) || 'load failed'));
+        });
+        nnWorker.postMessage({ ping: true });
+        nnBadge('通玄探测中…', 'tx-warn');
+        nnPingWatchdog = setTimeout(() => {
+            if (!nnAlive && !nnDisabled) {
+                nnDegradeUI('nn_worker.js 无响应（多半是该文件或其 ort/、nn_ai.js、siege_engine.js 没部署成功，' +
+                            '或服务器把 .js/.wasm 的 Content-Type 发错了）');
+            }
+        }, NN_PING_MS);
+        return nnWorker;
     }
 
     function startNNTurn(stateCopy, onResult, onClassic) {
         const worker = getNNWorker();
         if (!worker) { onClassic(); return; }
         const myId = ++nnToken;
-        const finish = () => {
+        const detach = () => {
             clearTimeout(nnWatchdog);
             nnWatchdog = null;
+            nnStopRamp();
             worker.onmessage = null;
             worker.onerror = null;
+            nnAbort = null;
         };
-        const giveUp = (reason) => {
+        nnAbort = function () {
             if (myId !== nnToken) return;
             nnToken++;               // 作废这条线上可能的迟到结果
-            finish();
-            degradeFromTongxuan(reason);
+            detach();
+            nnDegradeUI();
             onClassic();
         };
         worker.onmessage = function (e) {
             const msg = e.data || {};
-            if (msg.type === 'progress') { setAIProgress(msg.value); return; }
-            if (msg.type === 'status') {
-                if (msg.phase === 'loading') {
-                    statusMessage.textContent = '🧠 通玄首次加载模型中（约 20 MB，只需一次）…';
-                } else if (msg.phase === 'ready') {
-                    nnReady = true; nnInfo = msg.info;
-                    console.log('[通玄] 就绪', msg.info);
-                } else if (msg.phase === 'failed') {
-                    giveUp(msg.message || 'init-failed');
-                }
-                return;
-            }
+            if (msg.type === 'progress') { nnStopRamp(); setAIProgress(msg.value); return; }
+            if (msg.type === 'status') return;            // 由 persistent listener 统一处理
             if (msg.id !== myId) return;
-            if (msg.type === 'error') { giveUp(msg.message || 'nn-error'); return; }
-            finish();
-            if (msg.meta) console.log('[通玄] 本手', msg.meta);
+            if (msg.type === 'error') { nnFailNow(msg.message); return; }
+            detach();
+            if (msg.meta) {
+                console.log('[通玄] 本手', msg.meta);
+                if (nnInfo) {
+                    const why = msg.meta.why ? ' · ' + msg.meta.why : '';
+                    nnBadge(`${nnInfo.tier} 上一手 ${msg.meta.sims}访问/${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
+                }
+            }
             onResult({ data: { type: 'result', value: msg.value } });
         };
         worker.onerror = function (err) {
             console.error('通玄 Worker error:', err && err.message);
-            giveUp('worker-error');
+            nnFailNow('worker-error');
         };
         worker.postMessage({ state: stateCopy, id: myId });
-        nnWatchdog = setTimeout(() => giveUp('timeout'), nnReady ? NN_HARD_WAIT_READY : NN_HARD_WAIT_LOAD);
+        if (!nnReady) nnStartRamp();
+        nnWatchdog = setTimeout(() => {
+            nnFailNow(nnReady ? '本手超时' : '加载超时（模型没下完，多半是网络或被拦截）');
+        }, nnReady ? NN_HARD_WAIT_READY : NN_HARD_WAIT_LOAD);
     }
 
     // ---- 游戏状态 ----
@@ -2209,6 +2281,8 @@ self.onmessage = function(e) {
         if (aiWorker) aiWorker.onmessage = null;
         nnToken++;
         clearTimeout(nnWatchdog);
+        nnAbort = null;
+        nnStopRamp();
         if (nnWorker) { nnWorker.onmessage = null; nnWorker.onerror = null; }
 
         updateUI();
@@ -2878,10 +2952,13 @@ self.onmessage = function(e) {
             if (aiDifficulty === 'tongxuan') {
                 if (nnDisabled) {                 // 上一次失败过：点通玄即重试一次加载
                     if (nnWorker) nnWorker.terminate();
-                    nnWorker = null; nnDisabled = false; nnReady = false;
+                    nnWorker = null; nnDisabled = false; nnReady = false; nnAlive = false;
                 }
                 const w = getNNWorker();            // 提前开始加载权重，别卡在 AI 回合
-                if (w && !nnReady) w.postMessage({ warmup: true });
+                if (w) w.postMessage({ warmup: true });
+            } else {
+                nnBadge('未启用', '');
+                if (nnWorker) { nnWorker.terminate(); nnWorker = null; nnDisabled = false; nnReady = false; nnInfo = null; }
             }
         });
     });
