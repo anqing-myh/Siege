@@ -418,6 +418,7 @@
             <span>难度：</span>
             <button class="diff-btn active" data-diff="expert">专家</button>
             <button class="diff-btn" data-diff="master">大师</button>
+            <button class="diff-btn" data-diff="tongxuan">通玄</button>
         </div>
     </div>
     <div id="bottomBar">
@@ -441,7 +442,7 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 2.4.2 2026/6/11   感谢游玩！
+        <br>版本信息：Version 3.0.1 2026-10-29  感谢游玩~
     </div>
 </div>
 <script>
@@ -1039,12 +1040,14 @@ function checkOpponentThreats(state, aiPlayer) {
 
             const [s0, s1, sep] = computeRegionsFromState(state);
             if (sep) {
-                // 仅从分隔动作追踪 AI 区域（无论胜负），
-                // 非分隔动作的 bfsReachCount 值与封闭区域大小量级不同，不混入
-                const aiA = (aiPlayer === 0) ? s0 : s1;
-                if (aiA < minAIArea) minAIArea = aiA;
+                // 只追踪对手能赢的分隔动作的 AI 面积——对手不会选自己会输的走法
+                // 非分隔动作的 bfsReachCount 值（量级 15-30）与分隔区域大小（量级 1-5）不可比，不混入
                 const score = (opp === 0) ? (s0 - s1) : (s1 - s0);
-                if (score > 0) canWin = true;
+                if (score > 0) {
+                    const aiA = (aiPlayer === 0) ? s0 : s1;
+                    if (aiA < minAIArea) minAIArea = aiA;
+                    canWin = true;
+                }
             }
 
             // 恢复 state
@@ -1622,6 +1625,88 @@ self.onmessage = function(e) {
         return aiWorker;
     }
 
+    // ---- 通玄（NN）Web Worker ----
+    // 对外品牌「通玄系列」= 内部训练产物；权重 frontend/models/tongxuan_v1.onnx（gen007A3）。
+    // 任何环节失败都自动回退旧 AI（大师），绝不让 AI 回合卡死。
+    let nnWorker = null;
+    let nnReady = false;
+    let nnDisabled = false;
+    let nnInfo = null;
+    let nnToken = 0;
+    let nnWatchdog = null;
+    const NN_HARD_WAIT_READY = 12000;   // 已就绪后单手硬超时
+    const NN_HARD_WAIT_LOAD = 120000;   // 首次下载 ORT+权重（约 20 MB）的硬超时
+
+    function getNNWorker() {
+        if (nnDisabled) return null;
+        if (nnWorker) return nnWorker;
+        try {
+            nnWorker = new Worker('nn_worker.js');
+        } catch (err) {
+            console.error('通玄 Worker 创建失败:', err);
+            nnDisabled = true;
+            return null;
+        }
+        return nnWorker;
+    }
+
+    // 通玄不可用 -> 本局按「大师」继续，并把难度选择同步回大师，避免战绩归属失真
+    // （用户再点一次「通玄」即重试加载）
+    function degradeFromTongxuan(reason) {
+        nnDisabled = true;
+        if (aiDifficulty === 'tongxuan') {
+            aiDifficulty = 'master';
+            diffBtns.forEach(b => b.classList.toggle('active', b.dataset.diff === 'master'));
+        }
+        statusMessage.textContent = '⚠ 通玄暂不可用，已切换为大师';
+        console.warn('[通玄] 回退大师:', reason);
+    }
+
+    function startNNTurn(stateCopy, onResult, onClassic) {
+        const worker = getNNWorker();
+        if (!worker) { onClassic(); return; }
+        const myId = ++nnToken;
+        const finish = () => {
+            clearTimeout(nnWatchdog);
+            nnWatchdog = null;
+            worker.onmessage = null;
+            worker.onerror = null;
+        };
+        const giveUp = (reason) => {
+            if (myId !== nnToken) return;
+            nnToken++;               // 作废这条线上可能的迟到结果
+            finish();
+            degradeFromTongxuan(reason);
+            onClassic();
+        };
+        worker.onmessage = function (e) {
+            const msg = e.data || {};
+            if (msg.type === 'progress') { setAIProgress(msg.value); return; }
+            if (msg.type === 'status') {
+                if (msg.phase === 'loading') {
+                    statusMessage.textContent = '🧠 通玄首次加载模型中（约 20 MB，只需一次）…';
+                } else if (msg.phase === 'ready') {
+                    nnReady = true; nnInfo = msg.info;
+                    console.log('[通玄] 就绪', msg.info);
+                } else if (msg.phase === 'failed') {
+                    giveUp(msg.message || 'init-failed');
+                }
+                return;
+            }
+            if (msg.id !== myId) return;
+            if (msg.type === 'error') { giveUp(msg.message || 'nn-error'); return; }
+            finish();
+            if (msg.meta) console.log('[通玄] 本手', msg.meta);
+            onResult({ data: { type: 'result', value: msg.value } });
+        };
+        worker.onerror = function (err) {
+            console.error('通玄 Worker error:', err && err.message);
+            giveUp('worker-error');
+        };
+        worker.postMessage({ state: stateCopy, id: myId });
+        nnWatchdog = setTimeout(() => giveUp('timeout'), nnReady ? NN_HARD_WAIT_READY : NN_HARD_WAIT_LOAD);
+    }
+
     // ---- 游戏状态 ----
     let game = {
         board: [],
@@ -1644,10 +1729,11 @@ self.onmessage = function(e) {
         pvp: { wins: 0, losses: 0, draws: 0 },
         pve_expert: { wins: 0, losses: 0, draws: 0 },
         pve_master: { wins: 0, losses: 0, draws: 0 },
+        pve_tongxuan: { wins: 0, losses: 0, draws: 0 },
         p2p: { wins: 0, losses: 0, draws: 0 }
     };
 
-    // 难度：'expert'=搜索深度3, 'master'=搜索深度4
+    // 难度：'expert'=搜索深度3, 'master'=搜索深度4, 'tongxuan'=神经网络+PUCT（nn_worker.js，失败自动回退大师）
     let aiDifficulty = 'expert';
 
     // ---- DOM ----
@@ -2003,7 +2089,7 @@ self.onmessage = function(e) {
         if (!statsText || !stats[key]) return;
         const s = stats[key];
         const modeLabel = game.mode === 'pve'
-            ? (aiDifficulty === 'master' ? '大师' : '专家')
+            ? ({ expert: '专家', master: '大师', tongxuan: '通玄' }[aiDifficulty] || '专家')
             : getModeLabel();
         statsText.textContent =
             `[${modeLabel}] 您 ${s.wins} 胜 - ${getOpponentLabel()} ${s.losses} 胜`;
@@ -2121,6 +2207,9 @@ self.onmessage = function(e) {
         game.resultRecorded = false;
         // 清空 worker 回调，防止旧任务的返回值影响新游戏
         if (aiWorker) aiWorker.onmessage = null;
+        nnToken++;
+        clearTimeout(nnWatchdog);
+        if (nnWorker) { nnWorker.onmessage = null; nnWorker.onerror = null; }
 
         updateUI();
         drawBoard();
@@ -2295,8 +2384,8 @@ self.onmessage = function(e) {
         drawBoard();
         setAIProgress(0.02);
 
-        const worker = getAIWorker();
         const searchDepth = (aiDifficulty === 'expert') ? 3 : 4;
+        const useNN = (aiDifficulty === 'tongxuan');
         const stateCopy = JSON.parse(JSON.stringify({
             board: game.board,
             players: game.players,
@@ -2312,7 +2401,7 @@ self.onmessage = function(e) {
             aiThinking: false
         }));
 
-        worker.onmessage = function(e) {
+        const handle = function(e) {
             const msg = e.data;
             // 处理进度更新
             if (msg && msg.type === 'progress') {
@@ -2375,13 +2464,22 @@ self.onmessage = function(e) {
             endTurn();
         };
 
-        worker.onerror = function(err) {
-            console.error('AI Worker error:', err);
-            game.aiThinking = false;
-            endTurn();
+        const runClassic = function() {
+            const worker = getAIWorker();
+            worker.onmessage = handle;
+            worker.onerror = function(err) {
+                console.error('AI Worker error:', err);
+                game.aiThinking = false;
+                endTurn();
+            };
+            worker.postMessage({ state: stateCopy, depth: searchDepth });
         };
 
-        worker.postMessage({ state: stateCopy, depth: searchDepth });
+        if (useNN) {
+            startNNTurn(stateCopy, handle, runClassic);
+        } else {
+            runClassic();
+        }
     }
 
     // ---- WebSocket 联机 ----
@@ -2777,6 +2875,14 @@ self.onmessage = function(e) {
             diffBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             aiDifficulty = btn.dataset.diff;
+            if (aiDifficulty === 'tongxuan') {
+                if (nnDisabled) {                 // 上一次失败过：点通玄即重试一次加载
+                    if (nnWorker) nnWorker.terminate();
+                    nnWorker = null; nnDisabled = false; nnReady = false;
+                }
+                const w = getNNWorker();            // 提前开始加载权重，别卡在 AI 回合
+                if (w && !nnReady) w.postMessage({ warmup: true });
+            }
         });
     });
 
