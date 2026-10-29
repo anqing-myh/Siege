@@ -17,8 +17,12 @@
 'use strict';
 
 const REV = 'v1';
-const MODEL_URL = `models/tongxuan_v1.onnx?rev=${REV}`;
-const DEPS = [`ort/ort.wasm.min.js?rev=${REV}`, `siege_engine.js?rev=${REV}`, `nn_ai.js?rev=${REV}`];
+// 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
+// blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
+const BASE = self.__NN_BASE || location.href;
+const abs = (p) => new URL(p, BASE).href;
+const MODEL_URL = abs(`models/tongxuan_v1.onnx?rev=${REV}`);
+const DEPS = [abs(`ort/ort.wasm.min.js?rev=${REV}`), abs(`siege_engine.js?rev=${REV}`), abs(`nn_ai.js?rev=${REV}`)];
 
 const send = (m) => self.postMessage(m);
 
@@ -30,7 +34,7 @@ for (const dep of DEPS) {
     try {
         importScripts(dep);
     } catch (err) {
-        loadError = `${dep.split('?')[0]} 加载失败：` + ((err && err.message) || String(err));
+        loadError = `${dep.replace(/^https?:\/\/[^/]+/, '').split('?')[0]} 加载失败：` + ((err && err.message) || String(err));
         break;
     }
 }
@@ -64,11 +68,10 @@ async function init() {
     const threads = isolated ? Math.max(1, Math.min(4, hw)) : 1;
     ort.env.wasm.proxy = false;
     ort.env.wasm.numThreads = threads;
-    ort.env.wasm.wasmPaths = new URL('ort/', location.href).href;
+    ort.env.wasm.wasmPaths = abs('ort/');
     ort.env.logLevel = 'error';
 
-    const modelUrl = new URL(MODEL_URL, location.href).href;
-    const resp = await fetch(modelUrl, { cache: 'force-cache' });
+    const resp = await fetch(MODEL_URL, { cache: 'force-cache' });
     if (!resp.ok) throw new Error('模型下载失败 HTTP ' + resp.status);
     const buf = await resp.arrayBuffer();
     if (buf.byteLength < 1e6) throw new Error('模型文件异常 ' + buf.byteLength);

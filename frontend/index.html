@@ -1680,7 +1680,7 @@ self.onmessage = function(e) {
             diffBtns.forEach(b => b.classList.toggle('active', b.dataset.diff === 'master'));
         }
         const why = reason || '未知原因';
-        nnBadge('通玄不可用：' + why.slice(0, 100), 'tx-bad', why);
+        nnBadge('通玄不可用：' + why.slice(0, 140), 'tx-bad', why);
         statusMessage.textContent = '⚠ 通玄不可用，本局改用大师';
         console.warn('[通玄] 回退大师:', reason);
     }
@@ -1710,89 +1710,135 @@ self.onmessage = function(e) {
     let nnPingWatchdog = null;
     const NN_REV = 'v1';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
-    // 脚本"load failed"（error 事件 message 为空）= 文件根本没取到，去问服务器要个说法：
-    // 404 → 没部署/路径不对；200 但 Content-Type 非 JS → 托管端 MIME 发错（.js/.wasm/.mjs）；
-    // 200 且类型也对却起不来 → 多半是 COEP/CORP 把 Worker 脚本拦了。
-    function nnDiagFetch(name) {
+    // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
+    // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
+    // 状态码+MIME、是否被重定向到别的域名（Zeabur/CDN 常见）、同源 blob Worker 能不能起（区分"URL 被拦"和"Worker 整体被禁"）。
+    function nnDiagFetch(name, lead) {
+        const bits = [];
         fetch(name + '?rev=' + NN_REV + '&diag=1', { cache: 'no-store' })
             .then(r => {
-                const ct = r.headers.get('content-type') || '无类型';
-                nnDegradeUI(name + ' 取不到：HTTP ' + r.status + ' ' + ct +
-                            (r.ok ? '（类型没问题，疑似 COEP/CORP 拦截）' : '（未部署或路径不对）'));
+                bits.push('HTTP ' + r.status, r.headers.get('content-type') || '无类型');
+                if (r.url.indexOf(location.origin + '/' + name) !== 0) bits.push('实际地址 ' + r.url.replace(/^https?:\/\//, '').slice(0, 48));
             })
-            .catch(err => nnDegradeUI(name + ' 取不到：请求失败 ' + ((err && err.message) || err)));
+            .catch(err => bits.push('fetch 失败：' + ((err && err.message) || err)))
+            .then(() => new Promise(res => {
+                try {
+                    const u = URL.createObjectURL(new Blob(['self.onmessage=function(){postMessage(1)}'], { type: 'text/javascript' }));
+                    const b = new Worker(u);
+                    const done = (txt) => { clearTimeout(t); b.terminate(); URL.revokeObjectURL(u); bits.push(txt); res(); };
+                    const t = setTimeout(() => done('blobWorker=无响应'), 1500);
+                    b.onmessage = () => done('blobWorker=正常');
+                    b.onerror = () => done('blobWorker=被拦');
+                    b.postMessage(0);
+                } catch (e) { bits.push('blobWorker=不能创建'); res(); }
+            }))
+            .then(() => {
+                bits.push('跨源隔离=' + (self.crossOriginIsolated ? '开' : '关'));
+                nnDegradeUI((lead || (name + ' 取不到')) + '：' + bits.join('；'));
+            });
+    }
+    let nnLoading = null;
+    // 线上实测：siege.zeabur.com 上 `new Worker('nn_worker.js')` 直接 load failed（message/filename 全空），
+    // 而同页面的 blob Worker（旧 AI 就是 blob）正常。所以改成"取源码 → blob 起 Worker"，
+    // 并把页面目录注入 __NN_BASE，让 Worker 里的相对路径仍能解析成绝对地址。
+    function nnCreateWorker() {
+        const url = 'nn_worker.js?rev=' + NN_REV;
+        return fetch(url, { cache: 'no-store' })
+            .then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (r.headers.get('content-type') || '无类型'));
+                return r.text();
+            })
+            .then(src => {
+                if (/^\s*</.test(src)) throw new Error('拿到的是 HTML（托管端把未知路径兜底成页面了）');
+                const base = new URL('nn_worker.js', location.href).href.replace(/[^/]*$/, '');
+                const code = `self.__NN_BASE=${JSON.stringify(base)};\n${src}\n`;
+                const objUrl = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+                let w;
+                try {
+                    w = new Worker(objUrl);
+                } finally {
+                    URL.revokeObjectURL(objUrl);
+                }
+                return w;
+            });
     }
     function getNNWorker() {
-        if (nnDisabled) return null;
-        if (nnWorker) return nnWorker;
+        if (nnDisabled) return Promise.resolve(null);
+        if (nnWorker) return Promise.resolve(nnWorker);
+        if (nnLoading) return nnLoading;
         nnAlive = false;
-        try {
-            nnWorker = new Worker('nn_worker.js?rev=' + NN_REV);
-        } catch (err) {
-            nnDegradeUI('无法创建 Worker：' + ((err && err.message) || err) + '（页面需通过 http(s) 访问）');
+        nnBadge('通玄加载中…（前端 ' + NN_REV + '，内联模式）', 'tx-warn');
+        nnLoading = nnCreateWorker().then(w => {
+            nnLoading = null;
+            nnWorker = w;
+            w.addEventListener('message', nnPersistentListener);
+            w.addEventListener('error', ev => {
+                const msg = (ev && ev.message) || '';
+                if (msg) nnDegradeUI('nn_worker.js 脚本异常：' + msg);
+                else nnDiagFetch('nn_worker.js', '内联 Worker 未能启动');
+            });
+            w.postMessage({ ping: true });
+            nnPingWatchdog = setTimeout(() => {
+                if (!nnAlive && !nnDisabled) {
+                    nnDegradeUI('nn_worker.js 无响应（多半是它的依赖 ort/、nn_ai.js、siege_engine.js 没部署成功，' +
+                                '或服务器把 .js/.wasm 的 Content-Type 发错了）');
+                }
+            }, NN_PING_MS);
+            return w;
+        }).catch(err => {
+            nnLoading = null;
+            nnDegradeUI('nn_worker.js 源码取不到：' + ((err && err.message) || err));
             return null;
-        }
-        nnWorker.addEventListener('message', nnPersistentListener);
-        nnWorker.addEventListener('error', ev => {
-            const msg = (ev && ev.message) || '';
-            if (msg) nnDegradeUI('nn_worker.js 脚本异常：' + msg);
-            else nnDiagFetch('nn_worker.js');
         });
-        nnWorker.postMessage({ ping: true });
-        nnBadge('通玄探测中…（前端 ' + NN_REV + '）', 'tx-warn');
-        nnPingWatchdog = setTimeout(() => {
-            if (!nnAlive && !nnDisabled) {
-                nnDegradeUI('nn_worker.js 无响应（多半是该文件或其 ort/、nn_ai.js、siege_engine.js 没部署成功，' +
-                            '或服务器把 .js/.wasm 的 Content-Type 发错了）');
-            }
-        }, NN_PING_MS);
-        return nnWorker;
+        return nnLoading;
     }
 
     function startNNTurn(stateCopy, onResult, onClassic) {
-        const worker = getNNWorker();
-        if (!worker) { onClassic(); return; }
         const myId = ++nnToken;
-        const detach = () => {
-            clearTimeout(nnWatchdog);
-            nnWatchdog = null;
-            nnStopRamp();
-            worker.onmessage = null;
-            worker.onerror = null;
-            nnAbort = null;
-        };
-        nnAbort = function () {
-            if (myId !== nnToken) return;
-            nnToken++;               // 作废这条线上可能的迟到结果
-            detach();
-            nnDegradeUI();
-            onClassic();
-        };
-        worker.onmessage = function (e) {
-            const msg = e.data || {};
-            if (msg.type === 'progress') { nnStopRamp(); setAIProgress(msg.value); return; }
-            if (msg.type === 'status') return;            // 由 persistent listener 统一处理
-            if (msg.id !== myId) return;
-            if (msg.type === 'error') { nnFailNow(msg.message); return; }
-            detach();
-            if (msg.meta) {
-                console.log('[通玄] 本手', msg.meta);
-                if (nnInfo) {
-                    const why = msg.meta.why ? ' · ' + msg.meta.why : '';
-                    nnBadge(`${nnInfo.tier} 上一手 ${msg.meta.sims}访问/${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
+        return getNNWorker().then(worker => {
+            if (myId !== nnToken) return;           // 期间重开/换难度，这条线作废
+            if (!worker) { nnStopRamp(); onClassic(); return; }
+            const detach = () => {
+                clearTimeout(nnWatchdog);
+                nnWatchdog = null;
+                nnStopRamp();
+                worker.onmessage = null;
+                worker.onerror = null;
+                nnAbort = null;
+            };
+            nnAbort = function () {
+                if (myId !== nnToken) return;
+                nnToken++;               // 作废这条线上可能的迟到结果
+                detach();
+                nnDegradeUI();
+                onClassic();
+            };
+            worker.onmessage = function (e) {
+                const msg = e.data || {};
+                if (msg.type === 'progress') { nnStopRamp(); setAIProgress(msg.value); return; }
+                if (msg.type === 'status') return;            // 由 persistent listener 统一处理
+                if (msg.id !== myId) return;
+                if (msg.type === 'error') { nnFailNow(msg.message); return; }
+                detach();
+                if (msg.meta) {
+                    console.log('[通玄] 本手', msg.meta);
+                    if (nnInfo) {
+                        const why = msg.meta.why ? ' · ' + msg.meta.why : '';
+                        nnBadge(`${nnInfo.tier} 上一手 ${msg.meta.sims}访问/${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
+                    }
                 }
-            }
-            onResult({ data: { type: 'result', value: msg.value } });
-        };
-        worker.onerror = function (err) {
-            console.error('通玄 Worker error:', err && err.message);
-            nnFailNow('worker-error');
-        };
-        worker.postMessage({ state: stateCopy, id: myId });
-        if (!nnReady) nnStartRamp();
-        nnWatchdog = setTimeout(() => {
-            nnFailNow(nnReady ? '本手超时' : '加载超时（模型没下完，多半是网络或被拦截）');
-        }, nnReady ? NN_HARD_WAIT_READY : NN_HARD_WAIT_LOAD);
+                onResult({ data: { type: 'result', value: msg.value } });
+            };
+            worker.onerror = function (err) {
+                console.error('通玄 Worker error:', err && err.message);
+                nnFailNow('worker-error');
+            };
+            worker.postMessage({ state: stateCopy, id: myId });
+            if (!nnReady) nnStartRamp();
+            nnWatchdog = setTimeout(() => {
+                nnFailNow(nnReady ? '本手超时' : '加载超时（模型没下完，多半是网络或被拦截）');
+            }, nnReady ? NN_HARD_WAIT_READY : NN_HARD_WAIT_LOAD);
+        });
     }
 
     // ---- 游戏状态 ----
@@ -2968,13 +3014,14 @@ self.onmessage = function(e) {
             if (aiDifficulty === 'tongxuan') {
                 if (nnDisabled) {                 // 上一次失败过：点通玄即重试一次加载
                     if (nnWorker) nnWorker.terminate();
-                    nnWorker = null; nnDisabled = false; nnReady = false; nnAlive = false;
+                    nnWorker = null; nnLoading = null; nnDisabled = false; nnReady = false; nnAlive = false;
                 }
-                const w = getNNWorker();            // 提前开始加载权重，别卡在 AI 回合
-                if (w) w.postMessage({ warmup: true });
+                // 提前开始取权重，别卡在 AI 回合
+                getNNWorker().then(w => { if (w && aiDifficulty === 'tongxuan') w.postMessage({ warmup: true }); });
             } else {
                 nnBadge('未启用', '');
-                if (nnWorker) { nnWorker.terminate(); nnWorker = null; nnDisabled = false; nnReady = false; nnInfo = null; }
+                if (nnWorker) { nnWorker.terminate(); nnWorker = null; }
+                nnLoading = null; nnDisabled = false; nnReady = false; nnInfo = null;
             }
         });
     });
