@@ -5,6 +5,8 @@
  * 协议：与旧 AI Worker 兼容——收 { state, depth, id }，回 { type:'result', value:{moves,wallDir} }。
  * 追加：{type:'status', phase:'loading'|'ready'|'failed', info}、{type:'error', message}、
  *       {ping:true} -> {type:'pong', script, deps, loadError}（主线程用它 3 秒内判定 Worker 是否活着）。
+ * 复盘：{analyze:true, states:[...], id} -> {type:'analysis', id, values:[{v,s0,s1,sep,low}]}；
+ *       {suggest:true, state, id} -> {type:'suggestion', id, value, meta}（meta.top = 前 3 着法）。
  * depth 对本 Worker 无意义（NN 用时间预算），收到后忽略。
  *
  * 自适应：初始化时用一次真实搜索标定 ms/访问，据此选档位（budgetMs / simsMax），
@@ -16,7 +18,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v1';
+const REV = 'v2';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -125,8 +127,39 @@ async function think(state, id) {
     send({ type: 'result', id, value: { moves: r.moves, wallDir: r.wallDir }, meta: r.meta });
 }
 
+// ---------- 复盘分析通道 ----------
+/*
+ * 与对局通道共用 worker 和 net，但结果走自己的 {type:'analysis'|'suggestion'} + id，
+ * 主线程按 id 找回调，绝不碰 think() 的 nnAbort/进度条。
+ * 复盘用的是固定小预算（不跟对局档位走）：翻一手就是一次前向/一次短搜索，
+ * 手感必须"立刻出"，这里要的是判读速度不是棋力。
+ */
+const REPLAY = { budgetMs: 900, simsMax: 400, topK: 3 };
+
+async function runAnalyze(states, id) {
+    const values = [];
+    for (const s of states) {
+        const p = s.currentPlayer;
+        const ev = await net.evaluate(s, p);
+        const [s0, s1, sep] = E.computeRegions(s);
+        // 置信口径：双方还在同一个连通域里就没有"面积差"这个依据，
+        // 读数只能当倾向看（NOTES §16：开局段 value 的 R² 是负的）。
+        values.push({ v: ev.v, s0, s1, sep, low: !sep });
+    }
+    send({ type: 'analysis', id, values });
+}
+
+async function runSuggest(state, id) {
+    const player = state.currentPlayer;
+    const r = await NN.chooseAction(state, player, {
+        net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: 1.5, topK: REPLAY.topK
+    });
+    if (!r) { send({ type: 'suggestion', id, error: '无合法着法' }); return; }
+    send({ type: 'suggestion', id, value: { moves: r.moves, wallDir: r.wallDir }, meta: r.meta });
+}
+
 self.onmessage = function (e) {
-    const { state, id, ping, warmup } = e.data || {};
+    const { state, id, ping, warmup, analyze, suggest, states } = e.data || {};
     if (ping) {
         send({ type: 'pong', script: 'nn_worker.js', deps: DEPS.length, loadError });
         return;
@@ -134,9 +167,15 @@ self.onmessage = function (e) {
     if (loadError) {
         send({ type: 'status', phase: 'failed', message: loadError });
         if (state) send({ type: 'error', id, message: loadError });
+        if (analyze) send({ type: 'analysis', id, error: loadError });
+        if (suggest) send({ type: 'suggestion', id, error: loadError });
         return;
     }
-    if (initFailed) { send({ type: 'error', id, message: '通玄不可用（已初始化失败）' }); return; }
+    if (initFailed) {
+        const msg = '通玄不可用（已初始化失败）';
+        send({ type: analyze ? 'analysis' : suggest ? 'suggestion' : 'error', id, message: msg, error: msg });
+        return;
+    }
     if (!initPromise) {
         initPromise = init().catch(err => {
             initFailed = true;
@@ -145,8 +184,13 @@ self.onmessage = function (e) {
             throw err;
         });
     }
-    if (warmup || !state) { initPromise.catch(() => { }); return; }
-    initPromise.then(() => think(state, id)).catch(err => {
-        send({ type: 'error', id, message: (err && err.message) || String(err) });
+    const job = analyze ? () => runAnalyze(states, id)
+              : suggest ? () => runSuggest(state, id)
+              : (warmup || !state) ? null
+              : () => think(state, id);
+    if (!job) return;
+    initPromise.then(job).catch(err => {
+        const message = (err && err.message) || String(err);
+        send({ type: analyze ? 'analysis' : suggest ? 'suggestion' : 'error', id, message, error: message });
     });
 };

@@ -268,10 +268,24 @@
         return { moves: path, wallDir: E.WALL_DIRS[dirIdx] };
     }
 
+    // 复盘用：把根节点的访问分布导出成 top-K 候选（Q 取 -ch.W/ch.N 才是根行棋方视角）。
+    // 只按访问数降序、同访问保持 pool 原序 —— 与 chooseAction 选 best 的规则一致，所以 top[0] 就是 bestAction。
+    function topCandidates(root, pool, ev, topK) {
+        const arr = [];
+        for (const a of pool) {
+            const ch = root.kids.get(a);
+            arr.push({ a, n: ch ? ch.N : 0, q: ch && ch.N ? -ch.W / ch.N : 0, p: ev.probs[a] });
+        }
+        arr.sort((x, y) => y.n - x.n);
+        return arr.slice(0, topK);
+    }
+
     // ---------- 对外主入口 ----------
     /*
-     * opts: { net, budgetMs=2500, simsMax=4000, cPuct=1.5, warmSims=40 }
-     * 返回 { moves, wallDir, meta:{ sims, ms, bestAction } }；null 表示无合法动作。
+     * opts: { net, budgetMs=2500, simsMax=4000, cPuct=1.5, topK=0 }
+     * 返回 { moves, wallDir, meta:{ sims, ms, bestAction[, top, rootV] } }；null 表示无合法动作。
+     * topK>0 时主搜索分支额外给 meta.top（前 K 个着法的访问/Q/先验）；安全网分支只有 meta.why，
+     * 因为那几手是硬规则定的，不是模型权衡出来的——给假 top 反而误导。
      */
     async function chooseAction(state, player, opts) {
         const t0 = Date.now();
@@ -333,7 +347,12 @@
             if (fb) return Object.assign(fb, { meta: { sims, ms: Date.now() - t0, bestAction: pool[0], why: 'pathfix' } });
             return null;
         }
-        r.meta = { sims, ms: Date.now() - t0, bestAction: best };
+        r.meta = { sims, ms: Date.now() - t0, bestAction: best, excluded: legal.length - safe.length };
+        const topK = opts.topK || 0;
+        if (topK > 0) {
+            r.meta.top = topCandidates(root, pool, ev, topK);
+            r.meta.rootV = ev.v;
+        }
         return r;
     }
 

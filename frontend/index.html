@@ -260,6 +260,89 @@
             color: #f0d4a0;
         }
 
+        /* ---- 复盘分析 ---- */
+        #boardRow {
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            gap: 14px;
+        }
+        #valueBar {
+            display: none;
+            width: 46px;
+            height: 420px;
+            background: #3a332b;
+            border-radius: 8px;
+            box-shadow: 0 0 0 2px #6a5a42;
+        }
+        #valueCurve {
+            display: block;
+            width: 100%;
+            height: 80px;
+            background: #2f2a24;
+            border-radius: 8px;
+            box-shadow: none;
+            cursor: pointer;
+            margin: 4px 0 2px 0;
+        }
+        #analysisPanel {
+            display: none;
+            width: 300px;
+            align-self: stretch;
+            background: #4d4235;
+            border-radius: 18px;
+            padding: 12px 14px;
+            box-shadow: inset 0 2px 6px #1e1a16;
+            font-size: 13px;
+            color: #e8dccc;
+            overflow: hidden;
+        }
+        #analysisPanel .rp-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            color: #f0d4a0;
+            font-weight: 600;
+        }
+        #analysisPanel .rp-nav {
+            display: flex;
+            gap: 6px;
+            margin: 8px 0;
+            flex-wrap: wrap;
+        }
+        #analysisPanel .rp-val {
+            font-size: 15px;
+            margin: 6px 0 2px 0;
+            color: #fff;
+        }
+        #analysisPanel .rp-sub { font-size: 12px; opacity: 0.85; margin-bottom: 8px; }
+        #analysisPanel .rp-list { margin: 4px 0 0 0; }
+        #analysisPanel .rp-move {
+            background: #3a332b;
+            border-radius: 10px;
+            padding: 6px 8px;
+            margin: 4px 0;
+            line-height: 1.45;
+            white-space: normal;
+            word-break: break-word;
+        }
+        #analysisPanel .rp-move.best { background: #52452f; }
+        #analysisPanel .rp-actual { color: #c7a77d; font-size: 12px; margin-top: 6px; }
+        .rp-btn {
+            background: #5a4a3a;
+            border: none;
+            color: #eee;
+            padding: 5px 10px;
+            border-radius: 16px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .rp-btn:hover { background: #7a6a54; }
+        .rp-btn:disabled { opacity: 0.4; cursor: default; }
+        .rp-btn.rp-exit { background: #6a4a4a; }
+        .rp-btn.best { background: #c7a77d; color: #2d2d2d; }
+
         #aboutBtn,
         #closeAboutBtn {
             padding: 6px 12px;
@@ -310,6 +393,9 @@
             .board-wrapper {
                 padding: 10px;
             }
+            #boardRow { flex-wrap: wrap; gap: 8px; }
+            #valueBar { width: 26px; height: min(92vw, 330px); }
+            #analysisPanel { width: 100%; align-self: auto; }
             canvas {
                 width: min(92vw, 330px);
                 height: min(92vw, 330px);
@@ -376,8 +462,37 @@
         <button class="mode-btn active" data-mode="pve">🤖 人机对战</button>
         <button class="mode-btn" data-mode="p2p">🌐 联机对战</button>
     </div>
-    <div class="board-wrapper">
-        <canvas id="boardCanvas" width="420" height="420"></canvas>
+    <div id="boardRow">
+        <div class="board-wrapper">
+            <canvas id="boardCanvas" width="420" height="420"></canvas>
+        </div>
+        <canvas id="valueBar" width="46" height="420" style="display:none"></canvas>
+        <aside id="analysisPanel">
+            <div class="rp-head">
+                <span>复盘分析</span>
+                <span id="rpFrameNo">0 / 0</span>
+            </div>
+            <canvas id="valueCurve" width="272" height="80"></canvas>
+            <div class="rp-nav">
+                <button class="rp-btn" id="rpPrev">◀ 上一手</button>
+                <button class="rp-btn" id="rpNext">下一手 ▶</button>
+                <button class="rp-btn" id="rpFirst">开局</button>
+                <button class="rp-btn" id="rpLast">终局</button>
+            </div>
+            <div class="rp-val" id="rpValue">局面价值 —</div>
+            <div class="rp-sub" id="rpValueSub">等待评估…</div>
+            <div class="rp-nav" id="rpViewRow" style="display:none">
+                <button class="rp-btn" id="rpViewRed">视角：红方</button>
+                <button class="rp-btn" id="rpViewBlue">蓝方</button>
+            </div>
+            <div class="rp-sub" id="rpSugHead">通玄首选</div>
+            <div class="rp-list" id="rpMoves">—</div>
+            <div class="rp-actual" id="rpActual"></div>
+            <div class="rp-nav">
+                <button class="rp-btn rp-exit" id="rpExit">退出复盘</button>
+                <button class="rp-btn" id="rpRetry" style="display:none">重试评估</button>
+            </div>
+        </aside>
     </div>
     <div class="info-panel">
         <div class="info-top-row">
@@ -430,6 +545,7 @@
     </div>
     <div id="bottomBar">
         <div id="statsText">战绩：您 0 胜 - 对方 0 胜</div>
+        <button id="analyzeBtn" class="rp-btn" style="display:none">🔍 复盘分析</button>
         <button id="aboutBtn">关于作者</button>
     </div>
 
@@ -449,13 +565,18 @@
     </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>版本信息：Version 3.0.1 2026-10-29  感谢游玩~
+        <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
+        <br>版本信息：Version 3.1.0 2026-10-29  感谢游玩~
     </div>
 </div>
 <script>
 (function() {
     // ========== 配置：部署后修改这里的地址 ==========
-    const SERVER_URL = 'wss://siege-server.zeabur.app'; 
+    // ?server=ws://127.0.0.1:3000 只在本机有效（联调/冒烟测试用），线上仍然走写死的地址。
+    const LOCAL_WS = /^ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/;
+    const SERVER_URL = (LOCAL_WS.test(new URLSearchParams(location.search).get('server') || '')
+        ? new URLSearchParams(location.search).get('server')
+        : 'wss://siege-server.zeabur.app');
 
     const BOARD_SIZE = 7;
     const CELL_SIZE = 60;
@@ -1640,6 +1761,7 @@ self.onmessage = function(e) {
     let nnReady = false;
     let nnDisabled = false;
     let nnInfo = null;
+    let nnWhy = null;         // 最近一次不可用的原因（复盘面板要复用）
     let nnToken = 0;
     let nnWatchdog = null;
     let nnAbort = null;       // 本手的回退动作，由 startNNTurn 注册；探测失败时也能触发
@@ -1680,6 +1802,7 @@ self.onmessage = function(e) {
             diffBtns.forEach(b => b.classList.toggle('active', b.dataset.diff === 'master'));
         }
         const why = reason || '未知原因';
+        nnWhy = why;
         nnBadge('通玄不可用：' + why.slice(0, 140), 'tx-bad', why);
         statusMessage.textContent = '⚠ 通玄不可用，本局改用大师';
         console.warn('[通玄] 回退大师:', reason);
@@ -1690,9 +1813,43 @@ self.onmessage = function(e) {
         else nnDegradeUI(reason);
     }
 
+    // ---- 复盘用的一次性请求 ----
+    // 与对局通道共用同一个 Worker（省掉二次下载 19 MB），但按 id 走自己的回调表，
+    // 不碰 think 的 nnAbort/进度条：复盘时根本没有对局在跑，两条通道不会撞车。
+    const nnJobs = new Map();
+    let nnJobSeq = 1e9;   // 对局 id 从 1 递增，复盘 id 从 1e9 递增，互不串台
+    function nnAsk(kind, payload, timeoutMs) {
+        return getNNWorker().then(worker => {
+            if (!worker) throw new Error(nnWhy || '通玄不可用');
+            const id = ++nnJobSeq;
+            return new Promise((res, rej) => {
+                const timer = setTimeout(() => {
+                    nnJobs.delete(id);
+                    rej(new Error(kind === 'analyze' ? '整局评估超时' : '本手评估超时'));
+                }, timeoutMs);
+                nnJobs.set(id, {
+                    done: (msg) => {
+                        clearTimeout(timer); nnJobs.delete(id);
+                        if (msg.error || msg.message) rej(new Error(msg.error || msg.message));
+                        else res(msg);
+                    }
+                });
+                const pkt = { id };
+                pkt[kind] = true;
+                if (kind === 'analyze') pkt.states = payload; else pkt.state = payload;
+                worker.postMessage(pkt);
+            });
+        });
+    }
+    function nnResolveJob(m) {
+        const j = nnJobs.get(m.id);
+        if (j) j.done(m);
+    }
+
     function nnPersistentListener(e) {
         const m = e.data || {};
         if (m.type === 'pong') { nnAlive = true; return; }
+        if (m.type === 'analysis' || m.type === 'suggestion') { nnResolveJob(m); return; }
         if (m.type !== 'status') return;
         if (m.phase === 'loading') {
             nnBadge('通玄加载中：ONNX 运行时 + 权重 约 19 MB（只需一次）…', 'tx-warn');
@@ -1708,7 +1865,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v1';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v2';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -1896,6 +2053,7 @@ self.onmessage = function(e) {
 
     // ---- 是否允许当前玩家操作 ----
     function canOperate() {
+        if (replay.active) return false;
         if (game.gameOver) return false;
         if (game.mode === 'pve') return game.currentPlayer === 0 && !game.aiThinking;
         if (game.mode === 'pvp') return true;
@@ -2005,6 +2163,7 @@ self.onmessage = function(e) {
                 recordGameResult();
                 game.resultRecorded = true;
             }
+            recordReplayFrame();   // 终局这一手不走 endTurn，帧要在这里落
             return true;
         }
         return false;
@@ -2033,7 +2192,7 @@ self.onmessage = function(e) {
             }
         }
         // 高亮可移动格子
-        if (game.phase === 'move' && !game.gameOver) {
+        if (game.phase === 'move' && !game.gameOver && !replay.active) {
             const isAiTurn = game.mode === 'pve' && game.currentPlayer === 1;
             if (!isAiTurn) {
                 const p = game.currentPlayer;
@@ -2086,6 +2245,7 @@ self.onmessage = function(e) {
             else if (game.wallDir === 'left') { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + w); ctx.stroke(); }
             ctx.setLineDash([]);
         }
+        if (replay.active) drawReplayOverlay();
     }
 
     // ---- UI ----
@@ -2093,6 +2253,9 @@ self.onmessage = function(e) {
         stepDisplay.textContent = game.stepRemaining;
         turnCounter.textContent = '回合 ' + game.turnCount;
         const p = game.currentPlayer;
+        if (analyzeBtn && !replay.active) {
+            analyzeBtn.style.display = (game.gameOver && replay.frames.length > 1) ? '' : 'none';
+        }
 
         if (game.mode === 'pvp') {
             // 本地双人模式，玩家1红色，玩家2蓝色
@@ -2347,6 +2510,15 @@ self.onmessage = function(e) {
         nnStopRamp();
         if (nnWorker) { nnWorker.onmessage = null; nnWorker.onerror = null; }
 
+        // 复盘：新开局 = 新历史。棋盘此时已被重置，所以只能"收起面板"而不能还原旧局面。
+        if (replay.active) { replay.active = false; replay.saved = null; hideReplayUI(); }
+        replay.frames = [];
+        replay.values = [];
+        replay.idx = 0;
+        replay.sug = null;
+        replay.seq++;
+        recordReplayFrame();
+
         updateUI();
         drawBoard();
 
@@ -2484,12 +2656,488 @@ self.onmessage = function(e) {
         game.movePath = [{row: pl.row, col: pl.col}];
         game.wallDir = null;
         game.selectedWall = null;
+        recordReplayFrame();
         updateUI();
         drawBoard();
         if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) {
             setTimeout(() => aiTurn(), 100);
         }
     }
+
+    // ==================== 复盘分析（通玄判读）====================
+    /*
+     * frames[k] = 第 k 个"轮到谁"的局面，move = 从这一局面上实际走的那一手（终局帧为 null）。
+     * 于是看第 k 帧时：通玄首选 = 从 frames[k] 搜出来的前三手，values[k] 也是 frames[k] 的价值。
+     * 网络的 value 是「行棋方视角」，展示前一律翻成「己方视角」；它不是胜率
+     * （训练目标 z = 0.7·胜负 + 0.3·面积差，开局没有隔离时基本只能表示倾向）。
+     */
+    const RP_DIRS = ['top', 'right', 'bottom', 'left'];   // 顺序必须与 siege_engine 的 WALL_DIRS 一致
+    const RP_WALL_ZH = { top: '上', right: '右', bottom: '下', left: '左' };
+    const RP_COLORS = ['#d13f3f', '#3a6ea5'];
+    const RP_WHY = {
+        'immediate-win': '有直接制胜的着法，规则判定直接采纳（没跑搜索，所以没有对比数据）',
+        'only-safe': '只有这一手不送杀，规则判定直接采纳（没跑搜索）',
+        'lost-save-area': '怎么都输，挑保住地盘最大的那一手（没跑搜索）',
+        'pathfix': '搜索路径重建失败，走了兜底着法'
+    };
+    const replay = { active: false, frames: [], values: [], idx: 0, saved: null, selfIdx: 0, sug: null, seq: 0, analyzed: false };
+
+    const valueBarEl = document.getElementById('valueBar');
+    const rpPanel = document.getElementById('analysisPanel');
+    const rpCurve = document.getElementById('valueCurve');
+    const rpFrameNo = document.getElementById('rpFrameNo');
+    const rpValue = document.getElementById('rpValue');
+    const rpValueSub = document.getElementById('rpValueSub');
+    const rpViewRow = document.getElementById('rpViewRow');
+    const rpSugHead = document.getElementById('rpSugHead');
+    const rpMoves = document.getElementById('rpMoves');
+    const rpActual = document.getElementById('rpActual');
+    const rpRetry = document.getElementById('rpRetry');
+    const rpPrev = document.getElementById('rpPrev');
+    const rpNext = document.getElementById('rpNext');
+    const rpFirst = document.getElementById('rpFirst');
+    const rpLast = document.getElementById('rpLast');
+    const rpExit = document.getElementById('rpExit');
+    const rpViewRed = document.getElementById('rpViewRed');
+    const rpViewBlue = document.getElementById('rpViewBlue');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+
+    // 帧里只留规则引擎看得懂的东西 + 展示要用的标记；这份对象会被原样发给 Worker 做特征
+    function replayShot() {
+        return {
+            board: JSON.parse(JSON.stringify(game.board)),
+            players: [
+                { row: game.players[0].row, col: game.players[0].col },
+                { row: game.players[1].row, col: game.players[1].col }
+            ],
+            currentPlayer: game.currentPlayer,
+            stepRemaining: game.stepRemaining,
+            movePath: (game.movePath || []).map(m => ({ row: m.row, col: m.col })),
+            wallDir: game.wallDir || null,
+            gameOver: !!game.gameOver,
+            winner: game.winner === undefined ? null : game.winner,
+            turnCount: game.turnCount
+        };
+    }
+
+    /*
+     * 只在"回合边界"记帧：一回合内联机可能同步好几次（每走一步、每次选墙都发），
+     * 中途态不能各算一手 —— 判据是"轮到谁变了"或"终局标记变了"，再用状态 key 去掉重复。
+     */
+    function recordReplayFrame() {
+        if (replay.active) return;
+        if (!game.board || !game.board.length) return;
+        const state = replayShot();
+        const key = getStateKey(state, state.currentPlayer);
+        const last = replay.frames[replay.frames.length - 1];
+        if (last) {
+            if (last.key === key) return;
+            if (last.state.currentPlayer === state.currentPlayer && !!last.state.gameOver === !!state.gameOver) return;
+            last.move = describeMove(last.state, state);
+        }
+        replay.frames.push({ state, key, move: null });
+    }
+
+    // 两帧做差 = 这一手干了什么（三种模式通用，不用在每个落子点各写一遍文案）
+    function describeMove(a, b) {
+        const p = a.currentPlayer;
+        const pa = a.players[p], pb = b.players[p];
+        let wall = null;
+        for (const d of RP_DIRS) {
+            if (b.board[pb.row][pb.col].walls[d] && !a.board[pb.row][pb.col].walls[d]) { wall = d; break; }
+        }
+        return {
+            player: p,
+            from: { row: pa.row, col: pa.col },
+            to: { row: pb.row, col: pb.col },
+            steps: Math.max(0, (b.movePath || []).length - 1),
+            wall: wall
+        };
+    }
+
+    function rpName(p) {
+        if (game.mode === 'pve') return p === 0 ? '红方（你）' : '蓝方（AI）';
+        if (game.mode === 'p2p') {
+            if (wsPlayerIndex !== 0 && wsPlayerIndex !== 1) return p === 0 ? '红方' : '蓝方';
+            return p === wsPlayerIndex ? '己方' : '对方';
+        }
+        return p === 0 ? '红方' : '蓝方';
+    }
+
+    function fmtMove(mv) {
+        if (!mv) return '（这一帧之后对局结束）';
+        const step = mv.steps === 0 ? '原地' : mv.steps + '步';
+        const wall = mv.wall ? ('墙(' + mv.to.row + ',' + mv.to.col + ')·' + RP_WALL_ZH[mv.wall] + '侧') : '没放墙';
+        return rpName(mv.player) + ' ' + step + ' →(' + mv.to.row + ',' + mv.to.col + ') · ' + wall;
+    }
+
+    function moveActionId(mv) {
+        if (!mv || !mv.wall) return -1;
+        return (mv.to.row * BOARD_SIZE + mv.to.col) * 4 + RP_DIRS.indexOf(mv.wall);
+    }
+
+    // 网络 value 是行棋方视角，翻成"己方视角"
+    function selfView(k) {
+        const a = replay.values[k];
+        if (!a) return null;
+        const p = replay.frames[k].state.currentPlayer;
+        return { v: p === replay.selfIdx ? a.v : -a.v, low: !!a.low, sep: !!a.sep, s0: a.s0, s1: a.s1 };
+    }
+
+    function applyReplayFrame(k) {
+        const f = replay.frames[k];
+        if (!f) return;
+        replay.idx = k;
+        game.board = JSON.parse(JSON.stringify(f.state.board));
+        game.players = [
+            { row: f.state.players[0].row, col: f.state.players[0].col, regionSize: 0 },
+            { row: f.state.players[1].row, col: f.state.players[1].col, regionSize: 0 }
+        ];
+        const [s0, s1, sep] = computeRegions();     // 读的是刚写回去的 game，用来还原终局面积
+        game.players[0].regionSize = s0;
+        game.players[1].regionSize = s1;
+        game.currentPlayer = f.state.currentPlayer;
+        game.stepRemaining = 3;                      // 回放里"还剩几步"没有意义，固定 3 让棋盘干净
+        game.phase = 'move';
+        game.movePath = [{ row: game.players[game.currentPlayer].row, col: game.players[game.currentPlayer].col }];
+        game.wallDir = null;
+        game.selectedWall = null;
+        game.gameOver = !!f.state.gameOver;
+        game.winner = f.state.gameOver ? f.state.winner : null;
+        game.turnCount = f.state.turnCount;
+        game.aiThinking = false;
+        replay.sug = null;
+        replay.seq++;
+        if (!f.state.gameOver) requestSuggestion(f.state);
+        updateUI();
+        // 状态栏本来是写给"正在下的这盘"的，复盘里照抄会让人以为还能接着下
+        statusMessage.textContent = '🔍 复盘第 ' + k + ' 手 · 操作键已停用（Esc 退出）';
+        drawBoard();
+        renderReplayPanel();
+        drawValueBar();
+        drawCurve();
+    }
+
+    function gotoFrame(k) {
+        if (!replay.frames.length) return;
+        applyReplayFrame(Math.max(0, Math.min(replay.frames.length - 1, k)));
+    }
+
+    function enterReplay() {
+        if (replay.active) return;
+        recordReplayFrame();
+        if (replay.frames.length < 2) {
+            statusMessage.textContent = '⚠ 这一局还没攒出可复盘的局面';
+            return;
+        }
+        replay.saved = {
+            board: game.board, players: game.players, currentPlayer: game.currentPlayer,
+            stepRemaining: game.stepRemaining, phase: game.phase, movePath: game.movePath,
+            wallDir: game.wallDir, gameOver: game.gameOver, winner: game.winner,
+            mode: game.mode, turnCount: game.turnCount, aiThinking: game.aiThinking,
+            resultRecorded: game.resultRecorded
+        };
+        replay.active = true;
+        replay.analyzed = false;
+        replay.values = new Array(replay.frames.length).fill(null);
+        replay.selfIdx = (game.mode === 'p2p' && (wsPlayerIndex === 0 || wsPlayerIndex === 1)) ? wsPlayerIndex : 0;
+        if (valueBarEl) valueBarEl.style.display = 'block';
+        if (rpPanel) rpPanel.style.display = 'block';
+        if (analyzeBtn) analyzeBtn.style.display = 'none';
+        if (rpViewRow) rpViewRow.style.display = (game.mode === 'pvp') ? 'flex' : 'none';
+        gotoFrame(replay.frames.length - 1);
+        refreshAnalysis();
+    }
+
+    function exitReplay() {
+        if (!replay.active) return;
+        replay.active = false;
+        replay.seq++;
+        const s = replay.saved;
+        replay.saved = null;
+        if (s) {
+            game.board = s.board; game.players = s.players; game.currentPlayer = s.currentPlayer;
+            game.stepRemaining = s.stepRemaining; game.phase = s.phase; game.movePath = s.movePath;
+            game.wallDir = s.wallDir; game.gameOver = s.gameOver; game.winner = s.winner;
+            game.mode = s.mode; game.turnCount = s.turnCount; game.aiThinking = s.aiThinking;
+            game.resultRecorded = s.resultRecorded;
+        }
+        hideReplayUI();
+        updateUI();
+        drawBoard();
+        // 复盘期间拒收过对端同步，退出时把权威局面重新广播一次
+        if (game.mode === 'p2p') syncGameState();
+    }
+
+    function hideReplayUI() {
+        if (valueBarEl) valueBarEl.style.display = 'none';
+        if (rpPanel) rpPanel.style.display = 'none';
+        if (analyzeBtn) analyzeBtn.style.display = game.gameOver && replay.frames.length > 1 ? '' : 'none';
+    }
+
+    function refreshAnalysis() {
+        if (!replay.frames.length) return;
+        rpRetry.style.display = 'none';
+        replay.analyzed = false;
+        rpValue.textContent = '局面价值 —';
+        rpValueSub.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载') + '（走法回顾不受影响）') : '整局评估中…';
+        drawValueBar();
+        drawCurve();
+        nnAsk('analyze', replay.frames.map(f => f.state), 90000).then(msg => {
+            replay.values = msg.values;
+            replay.analyzed = true;
+            renderReplayPanel();
+            drawValueBar();
+            drawCurve();
+        }).catch(err => {
+            replay.values = new Array(replay.frames.length).fill(null);
+            rpValueSub.textContent = '整局评估失败：' + err.message;
+            rpRetry.style.display = '';
+            drawValueBar();
+            drawCurve();
+        });
+    }
+
+    function requestSuggestion(state) {
+        const seq = replay.seq;
+        if (nnDisabled) {
+            replay.sug = null;
+            rpMoves.textContent = '通玄不可用：' + (nnWhy || '未加载');
+            rpSugHead.textContent = '通玄首选';
+            return;
+        }
+        rpSugHead.textContent = '通玄首选';
+        rpMoves.textContent = '本手评估中…';
+        nnAsk('suggest', state, 20000).then(msg => {
+            if (seq !== replay.seq) return;
+            replay.sug = msg;
+            renderSuggestions();
+            drawBoard();
+        }).catch(err => {
+            if (seq !== replay.seq) return;
+            replay.sug = null;
+            rpMoves.textContent = '本手评估失败：' + err.message;
+        });
+    }
+
+    // 用当前帧的棋盘算"走到那一格要几步"（game 此时正是这一帧）。
+    // 不能借 getReachableCells：它只回格不回步数，而这里要的正是"几步到"。
+    function rpStepsTo(row, col) {
+        const p = game.currentPlayer, opp = 1 - p;
+        const oppR = game.players[opp].row, oppC = game.players[opp].col;
+        const sr = game.players[p].row, sc = game.players[p].col;
+        const seen = new Set([sr + ',' + sc]);
+        let layer = [{ row: sr, col: sc }];
+        for (let step = 0; step <= 3; step++) {
+            const next = [];
+            for (const cur of layer) {
+                if (cur.row === row && cur.col === col) return step;
+                for (const nb of getNeighbors(cur.row, cur.col)) {
+                    const k = nb.row + ',' + nb.col;
+                    if (seen.has(k) || (nb.row === oppR && nb.col === oppC)) continue;
+                    seen.add(k);
+                    next.push(nb);
+                }
+            }
+            layer = next;
+        }
+        return null;
+    }
+
+    function renderSuggestions() {
+        if (!rpMoves) return;
+        rpMoves.textContent = '';
+        const cur = replay.frames[replay.idx];
+        if (cur && cur.state.gameOver) {
+            rpSugHead.textContent = '通玄首选';
+            rpMoves.textContent = '这一帧棋已经终局，没有下一手可评；点「上一手」看模型怎么选。';
+            return;
+        }
+        const s = replay.sug;
+        const meta = (s && s.meta) || null;
+        if (!s) {                       // 空白会让人以为面板坏了，这里一定要留句话
+            rpSugHead.textContent = '通玄首选';
+            rpMoves.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载')) : '本手评估中…';
+            return;
+        }
+        if (!meta) {
+            const d = document.createElement('div');
+            d.className = 'rp-move';
+            d.textContent = '模型没有回出这一手的搜索数据';
+            rpMoves.appendChild(d);
+            return;
+        }
+        if (!meta.top) {
+            const d = document.createElement('div');
+            d.className = 'rp-move';
+            d.textContent = RP_WHY[meta.why] || ('规则判定：' + meta.why);
+            rpMoves.appendChild(d);
+            return;
+        }
+        rpSugHead.textContent = '通玄首选（' + meta.sims + ' 访问 / ' + meta.ms + 'ms）';
+        const f = replay.frames[replay.idx];
+        const actualId = f && f.move ? moveActionId(f.move) : -1;
+        const MARKS = '①②③④⑤';
+        meta.top.forEach((t, i) => {
+            const cell = Math.floor(t.a / 4);
+            const r = Math.floor(cell / BOARD_SIZE), c = cell % BOARD_SIZE;
+            const dir = RP_DIRS[t.a % 4];
+            const steps = rpStepsTo(r, c);
+            const d = document.createElement('div');
+            d.className = 'rp-move' + (i === 0 ? ' best' : '');
+            d.textContent = MARKS[i] + ' →(' + r + ',' + c + ') ' + (steps === null ? '?' : steps) + '步' +
+                ' · 墙' + RP_WALL_ZH[dir] +
+                ' · 访问' + t.n +
+                ' · Q' + (t.q >= 0 ? '+' : '') + t.q.toFixed(2) +
+                ' · 先验' + t.p.toFixed(2) +
+                (t.a === actualId ? ' ✓本局实际' : '');
+            rpMoves.appendChild(d);
+        });
+        if (meta.excluded) {
+            const d = document.createElement('div');
+            d.className = 'rp-sub';
+            d.textContent = '（已排除 ' + meta.excluded + ' 个自困/送杀的着法）';
+            rpMoves.appendChild(d);
+        }
+    }
+
+    function renderReplayPanel() {
+        if (!rpPanel || !replay.active) return;
+        const n = replay.frames.length, k = replay.idx;
+        const f = replay.frames[k];
+        rpFrameNo.textContent = '第 ' + k + ' / ' + (n - 1) + ' 手';
+        rpPrev.disabled = k <= 0;
+        rpNext.disabled = k >= n - 1;
+        const sv = selfView(k);
+        if (!sv) {
+            if (!replay.analyzed && !nnDisabled) rpValue.textContent = '局面价值 —';
+        } else {
+            const read = Math.round(sv.v * 100);
+            rpValue.textContent = '局面价值 ' + (read > 0 ? '+' : '') + read + '（' + rpName(replay.selfIdx) + '视角，±100）';
+            const own = replay.selfIdx;
+            const sMine = own === 0 ? sv.s0 : sv.s1, sOpp = own === 0 ? sv.s1 : sv.s0;
+            rpValueSub.textContent = (sv.sep
+                ? ('已分隔：' + rpName(own) + ' ' + sMine + ' 格 vs ' + rpName(1 - own) + ' ' + sOpp + ' 格 · ')
+                : ('尚未分隔（同一连通域 ' + sMine + ' 格）· '))
+                + (sv.low ? '还没有面积差依据，读数只表示倾向' : '读数是通玄 value，不是胜率');
+        }
+        rpActual.textContent = '本局实际：' + fmtMove(f && f.move);
+        rpViewRed.classList.toggle('best', replay.selfIdx === 0);
+        rpViewBlue.classList.toggle('best', replay.selfIdx === 1);
+        renderSuggestions();
+        drawCurve();
+    }
+
+    function drawValueBar() {
+        if (!valueBarEl || !replay.active) return;
+        const c = valueBarEl.getContext('2d');
+        const w = valueBarEl.width, h = valueBarEl.height, zero = h / 2;
+        c.clearRect(0, 0, w, h);
+        c.fillStyle = '#3a332b'; c.fillRect(0, 0, w, h);
+        c.setLineDash([4, 4]); c.strokeStyle = 'rgba(255,255,255,0.5)'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(0, zero); c.lineTo(w, zero); c.stroke(); c.setLineDash([]);
+        const sv = selfView(replay.idx);
+        if (!sv) return;
+        // v=+1 → 分界线推到顶端（整条都是己方色），v=-1 → 推到底，0 正中
+        const y = zero * (1 - sv.v);
+        c.globalAlpha = sv.low ? 0.4 : 1;
+        c.fillStyle = RP_COLORS[replay.selfIdx]; c.fillRect(0, y, w, h - y);
+        c.fillStyle = RP_COLORS[1 - replay.selfIdx]; c.fillRect(0, 0, w, y);
+        c.globalAlpha = 1;
+        c.strokeStyle = '#ffffff'; c.lineWidth = 2;
+        c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+        const read = Math.round(sv.v * 100);
+        const txt = (read > 0 ? '+' : '') + read;
+        c.font = 'bold 12px sans-serif'; c.textAlign = 'center';
+        const ty = Math.max(12, Math.min(h - 5, y - 5));
+        c.lineWidth = 3; c.strokeStyle = 'rgba(0,0,0,0.6)'; c.strokeText(txt, w / 2, ty);
+        c.fillStyle = '#fff'; c.fillText(txt, w / 2, ty);
+        if (sv.low) { c.font = '10px sans-serif'; c.fillStyle = '#e0c080'; c.fillText('?', w / 2, 11); }
+    }
+
+    function drawCurve() {
+        if (!rpCurve || !replay.active) return;
+        const c = rpCurve.getContext('2d');
+        const w = rpCurve.width, h = rpCurve.height, pad = 6, zero = h / 2;
+        c.clearRect(0, 0, w, h);
+        c.fillStyle = '#2f2a24'; c.fillRect(0, 0, w, h);
+        c.setLineDash([3, 3]); c.strokeStyle = 'rgba(255,255,255,0.3)'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(0, zero); c.lineTo(w, zero); c.stroke(); c.setLineDash([]);
+        const n = replay.frames.length;
+        if (n < 2) return;
+        const stepX = (w - 2 * pad) / (n - 1);
+        const xOf = k => pad + k * stepX;
+        const yOf = v => (h - pad) - (v + 1) / 2 * (h - 2 * pad);
+        c.strokeStyle = RP_COLORS[replay.selfIdx]; c.lineWidth = 1.6;
+        c.beginPath();
+        let started = false;
+        for (let k = 0; k < n; k++) {
+            const sv = selfView(k);
+            if (!sv) { started = false; continue; }
+            const x = xOf(k), y = yOf(sv.v);
+            if (!started) { c.moveTo(x, y); started = true; } else c.lineTo(x, y);
+        }
+        c.stroke();
+        c.strokeStyle = 'rgba(255,255,255,0.6)'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(xOf(replay.idx), 2); c.lineTo(xOf(replay.idx), h - 2); c.stroke();
+    }
+
+    function rpStrokeEdge(r, col, dir, color, lw, dash) {
+        const x = col * CELL_SIZE, y = r * CELL_SIZE;
+        ctx.save();
+        ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.setLineDash(dash || []);
+        ctx.beginPath();
+        if (dir === 'top') { ctx.moveTo(x, y); ctx.lineTo(x + CELL_SIZE, y); }
+        else if (dir === 'bottom') { ctx.moveTo(x, y + CELL_SIZE); ctx.lineTo(x + CELL_SIZE, y + CELL_SIZE); }
+        else if (dir === 'left') { ctx.moveTo(x, y); ctx.lineTo(x, y + CELL_SIZE); }
+        else { ctx.moveTo(x + CELL_SIZE, y); ctx.lineTo(x + CELL_SIZE, y + CELL_SIZE); }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // 棋盘叠加：黄=模型首选，对手色实线=本局实际下的墙
+    function drawReplayOverlay() {
+        const f = replay.frames[replay.idx];
+        if (!f) return;
+        if (f.move && f.move.wall) {
+            rpStrokeEdge(f.move.to.row, f.move.to.col, f.move.wall, RP_COLORS[1 - f.move.player], 7, []);
+        }
+        const top = replay.sug && replay.sug.meta && replay.sug.meta.top;
+        if (!top || !top.length) return;
+        const a = top[0].a;
+        const cell = Math.floor(a / 4);
+        const r = Math.floor(cell / BOARD_SIZE), c = cell % BOARD_SIZE;
+        ctx.fillStyle = 'rgba(255, 215, 0, 0.35)';
+        ctx.fillRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        ctx.strokeStyle = 'rgba(255, 215, 0, 0.9)'; ctx.lineWidth = 3;
+        ctx.strokeRect(c * CELL_SIZE + 1, r * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2);
+        rpStrokeEdge(r, c, RP_DIRS[a % 4], '#ffcc00', 6, [8, 6]);
+    }
+
+    if (analyzeBtn) analyzeBtn.addEventListener('click', enterReplay);
+    if (rpPrev) rpPrev.addEventListener('click', () => gotoFrame(replay.idx - 1));
+    if (rpNext) rpNext.addEventListener('click', () => gotoFrame(replay.idx + 1));
+    if (rpFirst) rpFirst.addEventListener('click', () => gotoFrame(0));
+    if (rpLast) rpLast.addEventListener('click', () => gotoFrame(replay.frames.length - 1));
+    if (rpExit) rpExit.addEventListener('click', exitReplay);
+    if (rpRetry) rpRetry.addEventListener('click', () => {
+        if (nnDisabled) {                       // 面板里也能重试一次加载，不用退回难度按钮
+            if (nnWorker) nnWorker.terminate();
+            nnWorker = null; nnLoading = null; nnDisabled = false; nnReady = false; nnAlive = false; nnWhy = null;
+        }
+        refreshAnalysis();
+    });
+    const rpSetView = (i) => { replay.selfIdx = i; renderReplayPanel(); drawValueBar(); };
+    if (rpViewRed) rpViewRed.addEventListener('click', () => rpSetView(0));
+    if (rpViewBlue) rpViewBlue.addEventListener('click', () => rpSetView(1));
+    if (rpCurve) rpCurve.addEventListener('click', (e) => {
+        if (!replay.active || replay.frames.length < 2) return;
+        const rect = rpCurve.getBoundingClientRect();
+        const x = (e.clientX - rect.left) * (rpCurve.width / rect.width);
+        const pad = 6;
+        const k = Math.round((x - pad) / ((rpCurve.width - 2 * pad) / (replay.frames.length - 1)));
+        gotoFrame(k);
+    });
 
     // ---- AI ----
     const aiProgressBar = document.getElementById('aiProgressBar');
@@ -2693,6 +3341,11 @@ self.onmessage = function(e) {
     }
 
     function applyNetworkState(state) {
+        if (replay.active) {
+            // 复盘期间对端的同步不能盖掉回放棋盘；但对方已经开新局（终局标记消失）就自动退出复盘跟上进来
+            if (state.gameOver) return;
+            exitReplay();
+        }
         game.board = state.board;
         game.players = state.players;
         game.currentPlayer = state.currentPlayer;
@@ -2706,11 +3359,13 @@ self.onmessage = function(e) {
         game.turnCount = state.turnCount;
         game.aiThinking = false;
 
+        recordReplayFrame();
         updateUI();
         drawBoard();
     }
 
     function syncGameState() {
+        if (replay.active) return;   // 回放中的棋盘不是局面，不能当作权威状态广播出去
         if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN && wsRoomCode) {
             wsSend({
                 type: 'sync',
@@ -2894,6 +3549,14 @@ self.onmessage = function(e) {
         document.addEventListener('keydown', (e) => {
             if (isTypingInRoomCodeInput(e)) return;
             const key = e.key;
+            if (replay.active) {          // 复盘里键盘只管翻手，不管下棋
+                if (key === 'ArrowLeft') { e.preventDefault(); gotoFrame(replay.idx - 1); }
+                else if (key === 'ArrowRight') { e.preventDefault(); gotoFrame(replay.idx + 1); }
+                else if (key === 'Home') { e.preventDefault(); gotoFrame(0); }
+                else if (key === 'End') { e.preventDefault(); gotoFrame(replay.frames.length - 1); }
+                else if (key === 'Escape') { e.preventDefault(); exitReplay(); }
+                return;
+            }
             if (!canOperate()) return;
             if (key === 'w' || key === 'W' || key === 'ArrowUp') {
                 e.preventDefault();
@@ -3008,13 +3671,14 @@ self.onmessage = function(e) {
     }
     diffBtns.forEach(btn => {
         btn.addEventListener('click', () => {
+            if (replay.active) exitReplay();
             diffBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             aiDifficulty = btn.dataset.diff;
             if (aiDifficulty === 'tongxuan') {
                 if (nnDisabled) {                 // 上一次失败过：点通玄即重试一次加载
                     if (nnWorker) nnWorker.terminate();
-                    nnWorker = null; nnLoading = null; nnDisabled = false; nnReady = false; nnAlive = false;
+                    nnWorker = null; nnLoading = null; nnDisabled = false; nnReady = false; nnAlive = false; nnWhy = null;
                 }
                 // 提前开始取权重，别卡在 AI 回合
                 getNNWorker().then(w => { if (w && aiDifficulty === 'tongxuan') w.postMessage({ warmup: true }); });
@@ -3028,6 +3692,7 @@ self.onmessage = function(e) {
 
     modeBtns.forEach(btn => {
         btn.addEventListener('click', () => {
+            if (replay.active) exitReplay();
             modeBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             game.mode = btn.dataset.mode;
@@ -3049,6 +3714,7 @@ self.onmessage = function(e) {
     updateAIControlVisibility();
 
     restartBtn.addEventListener('click', () => {
+        if (replay.active) exitReplay();
         if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN) {
             if (wsPlayerIndex === 0) {
                 resetGame(true);
