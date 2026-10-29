@@ -1679,8 +1679,8 @@ self.onmessage = function(e) {
             aiDifficulty = 'master';
             diffBtns.forEach(b => b.classList.toggle('active', b.dataset.diff === 'master'));
         }
-        const why = (reason || '未知原因').replace(/^nn_worker\.js /, '');
-        nnBadge('通玄不可用：' + why.slice(0, 90), 'tx-bad', reason || '未知原因');
+        const why = reason || '未知原因';
+        nnBadge('通玄不可用：' + why.slice(0, 100), 'tx-bad', why);
         statusMessage.textContent = '⚠ 通玄不可用，本局改用大师';
         console.warn('[通玄] 回退大师:', reason);
     }
@@ -1708,22 +1708,38 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
+    const NN_REV = 'v1';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+
+    // 脚本"load failed"（error 事件 message 为空）= 文件根本没取到，去问服务器要个说法：
+    // 404 → 没部署/路径不对；200 但 Content-Type 非 JS → 托管端 MIME 发错（.js/.wasm/.mjs）；
+    // 200 且类型也对却起不来 → 多半是 COEP/CORP 把 Worker 脚本拦了。
+    function nnDiagFetch(name) {
+        fetch(name + '?rev=' + NN_REV + '&diag=1', { cache: 'no-store' })
+            .then(r => {
+                const ct = r.headers.get('content-type') || '无类型';
+                nnDegradeUI(name + ' 取不到：HTTP ' + r.status + ' ' + ct +
+                            (r.ok ? '（类型没问题，疑似 COEP/CORP 拦截）' : '（未部署或路径不对）'));
+            })
+            .catch(err => nnDegradeUI(name + ' 取不到：请求失败 ' + ((err && err.message) || err)));
+    }
     function getNNWorker() {
         if (nnDisabled) return null;
         if (nnWorker) return nnWorker;
         nnAlive = false;
         try {
-            nnWorker = new Worker('nn_worker.js');
+            nnWorker = new Worker('nn_worker.js?rev=' + NN_REV);
         } catch (err) {
             nnDegradeUI('无法创建 Worker：' + ((err && err.message) || err) + '（页面需通过 http(s) 访问）');
             return null;
         }
         nnWorker.addEventListener('message', nnPersistentListener);
         nnWorker.addEventListener('error', ev => {
-            nnDegradeUI('nn_worker.js 脚本异常：' + ((ev && ev.message) || 'load failed'));
+            const msg = (ev && ev.message) || '';
+            if (msg) nnDegradeUI('nn_worker.js 脚本异常：' + msg);
+            else nnDiagFetch('nn_worker.js');
         });
         nnWorker.postMessage({ ping: true });
-        nnBadge('通玄探测中…', 'tx-warn');
+        nnBadge('通玄探测中…（前端 ' + NN_REV + '）', 'tx-warn');
         nnPingWatchdog = setTimeout(() => {
             if (!nnAlive && !nnDisabled) {
                 nnDegradeUI('nn_worker.js 无响应（多半是该文件或其 ort/、nn_ai.js、siege_engine.js 没部署成功，' +
