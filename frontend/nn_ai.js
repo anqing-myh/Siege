@@ -85,7 +85,21 @@
         return r.v;
     }
 
-    async function traverse(node, net, cPuct) {
+    /*
+     * 终局样本计数：复盘的"预测胜率"只认这个。
+     * 只有真的走到终局的 sim 才是胜负样本 —— 预算耗尽停在半盘的 frontier 叶子给的是网络 v，
+     * 那是倾向不是结果，混进去等于自己骗自己。计数按根行棋方视角，和=0.5 由调用方折算。
+     */
+    function tallyTerminal(cnt, rootPlayer, node, v) {
+        if (!cnt) return;
+        cnt.tn++;
+        const rv = node.player === rootPlayer ? v : -v;
+        if (rv > 0) cnt.tw++;
+        else if (rv === 0) cnt.td++;
+    }
+
+    async function traverse(node, net, cPuct, cnt, rootPlayer) {
+        if (rootPlayer === undefined) rootPlayer = node.player;   // 首次调用即根节点
         const t = E.terminalInfo(node.state);
         if (t) {
             // 终局叶子也必须计数。以前直接 return，这个孩子的 N 永远是 0 ⇒ Q 恒为 0（明明是精确 ±1），
@@ -93,6 +107,7 @@
             // 前端另有 findImmediateWin 兜底，所以"漏赢"没外露，但中盘的 sims 一直在被白烧。
             const tv = node.player === 0 ? t.reward : -t.reward;
             node.N++; node.W += tv;
+            tallyTerminal(cnt, rootPlayer, node, tv);
             return tv;
         }
         if (!node.ready) return await expand(node, net);
@@ -114,13 +129,13 @@
             ch.state = E.cloneState(node.state);
             E.applyAction(ch.state, node.player, pick);
         }
-        const vn = -(await traverse(ch, net, cPuct));
+        const vn = -(await traverse(ch, net, cPuct, cnt, rootPlayer));
         node.W += vn; node.N++;
         return vn;
     }
 
     // 迭代版 traverse（避免深树 await 链开销）
-    async function traverseIter(root, net, cPuct) {
+    async function traverseIter(root, net, cPuct, cnt) {
         const path = [];
         let node = root, v;
         for (;;) {
@@ -129,6 +144,7 @@
                 v = node.player === 0 ? t.reward : -t.reward;
                 // path 里存的是祖先节点，回传循环不会碰这个叶子 ⇒ 终局计数要在这里补（同 traverse）
                 node.N++; node.W += v;
+                tallyTerminal(cnt, root.player, node, v);
                 break;
             }
             if (!node.ready) { v = await expand(node, net); break; }
@@ -280,10 +296,45 @@
         return arr.slice(0, topK);
     }
 
+    /*
+     * 随机推演胜率：从这个局面起双方随手走到底，统计行棋方赢的比例。
+     * 为什么用它而不是用搜索树里的终局样本（实测，NOTES §42）：
+     *  - 400 访问的树在中盘只走到 0–32 个终局，开局一个都没有，而且这几十局全挤在搜索挑中的最佳线路上
+     *    ⇒ 动不动就报 0% 或 100%，样本小又带偏，正是"莫名其妙 100 胜率"的那个坑；
+     *  - 推演是纯引擎运算、不碰网络，一帧 300 局实测 20–105ms，比同帧那次搜索便宜，且每帧样本都是满的。
+     * 它答的问题是"这局面放任走下去谁会输"（形势），不是"通玄会怎么下"（那看首选行的 Q 与访问）。
+     * 一次遍历顺带把终局面积差也累计下来（terminalInfo 本来就算好了 s0/s1）⇒ 胜率与期望面积差同价、同一批样本。
+     * 没在 cap 手内终局的推演整条丢弃 —— 算成和棋会把"没结果"偷偷记成"各半"。
+     */
+    function rolloutScore(state, n, cap) {
+        const p = state.currentPlayer;
+        const maxPly = cap || 120;
+        let cnt = 0, w = 0, d = 0;
+        for (let i = 0; i < n; i++) {
+            const s = E.cloneState(state);
+            let res = null;
+            for (let k = 0; k < maxPly; k++) {
+                const t = E.terminalInfo(s);
+                if (t) { res = t; break; }
+                const legal = E.legalActions(s, s.currentPlayer);
+                if (!legal.length) { res = { s0: 0, s1: 0, winner: 'draw' }; break; }
+                E.applyAction(s, s.currentPlayer, legal[(Math.random() * legal.length) | 0]);
+            }
+            if (!res) continue;
+            cnt++;
+            if (res.winner === 'draw') w += 0.5;
+            else if (res.winner === p) w += 1;
+            d += p === 0 ? res.s0 - res.s1 : res.s1 - res.s0;
+        }
+        return { n: cnt, w, d };
+    }
+
     // ---------- 对外主入口 ----------
     /*
      * opts: { net, budgetMs=2500, simsMax=4000, cPuct=1.5, topK=0 }
-     * 返回 { moves, wallDir, meta:{ sims, ms, bestAction[, top, rootV] } }；null 表示无合法动作。
+     * 返回 { moves, wallDir, meta:{ sims, ms, bestAction, tn, tw, td[, top, rootV][, solved][, why] } }；null 表示无合法动作。
+     * meta.tn/tw/td = 本次搜索里真走到终局的模拟数、其中根行棋方胜/平的局数 ⇒ 复盘胜率 = (tw+0.5td)/tn。
+     * meta.solved = ±1 时胜负由规则判定（一步制胜 / 全都输），跟样本无关。
      * topK>0 时主搜索分支额外给 meta.top（前 K 个着法的访问/Q/先验）；安全网分支只有 meta.why，
      * 因为那几手是硬规则定的，不是模型权衡出来的——给假 top 反而误导。
      */
@@ -299,7 +350,8 @@
         const win = findImmediateWin(state, player, legal);
         if (win) {
             const r = toResult(state, player, win.action);
-            if (r) return Object.assign(r, { meta: { sims: 0, ms: Date.now() - t0, bestAction: win.action, why: 'immediate-win' } });
+            // solved=+1：胜负已被规则判定，不需要样本，前端按 100% 画且不做收缩
+            if (r) return Object.assign(r, { meta: { sims: 0, ms: Date.now() - t0, bestAction: win.action, why: 'immediate-win', solved: 1, tn: 0, tw: 0, td: 0 } });
         }
 
         // 2) 候选集裁剪：排除"自困"和"送对手一步杀"的着法
@@ -318,7 +370,8 @@
                 if (area > bestArea) { bestArea = area; pick = a; }
             }
             const r = toResult(state, player, pick);
-            if (r) return Object.assign(r, { meta: { sims: 0, ms: Date.now() - t0, bestAction: pick, why: 'lost-save-area', area: bestArea } });
+            // solved=-1：每个合法着法都输，这是规则判定不是估计
+            if (r) return Object.assign(r, { meta: { sims: 0, ms: Date.now() - t0, bestAction: pick, why: 'lost-save-area', area: bestArea, solved: -1, tn: 0, tw: 0, td: 0 } });
         }
         const pool = safe;
         if (pool.length === 1) {
@@ -330,9 +383,10 @@
         const root = Node(E.cloneState(state), player);
         const ev = await opts.net.evaluate(root.state, player);
         root.legal = ev.legal; root.priors = ev.probs; root.ready = true;
+        const cnt = { tn: 0, tw: 0, td: 0 };
         let sims = 0;
         while (sims < simsMax && Date.now() - t0 < budget * 0.8) {
-            await traverseIter(root, opts.net, cPuct);
+            await traverseIter(root, opts.net, cPuct, cnt);
             sims++;
         }
         let best = pool[0], bestN = -1;
@@ -344,10 +398,11 @@
         const r = toResult(state, player, best);
         if (!r) { // 理论上不该发生：路径重建失败
             const fb = toResult(state, player, pool[0]);
-            if (fb) return Object.assign(fb, { meta: { sims, ms: Date.now() - t0, bestAction: pool[0], why: 'pathfix' } });
+            if (fb) return Object.assign(fb, { meta: { sims, ms: Date.now() - t0, bestAction: pool[0], why: 'pathfix', tn: cnt.tn, tw: cnt.tw, td: cnt.td } });
             return null;
         }
-        r.meta = { sims, ms: Date.now() - t0, bestAction: best, excluded: legal.length - safe.length };
+        r.meta = { sims, ms: Date.now() - t0, bestAction: best, excluded: legal.length - safe.length,
+                   tn: cnt.tn, tw: cnt.tw, td: cnt.td };
         const topK = opts.topK || 0;
         if (topK > 0) {
             r.meta.top = topCandidates(root, pool, ev, topK);
@@ -356,6 +411,6 @@
         return r;
     }
 
-    return { createOrtNet, createStubNet, chooseAction, shortestPath, toResult,
+    return { createOrtNet, createStubNet, chooseAction, shortestPath, toResult, rolloutScore,
              selfTrapped, oppCanWinNext, outcomeAreaIfLost, findImmediateWin, traverse, traverseIter };
 });

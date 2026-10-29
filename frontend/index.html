@@ -267,7 +267,8 @@
             justify-content: center;
             gap: 14px;
         }
-        #valueBar {
+        /* 两条形势条：左=推演胜率，右=期望最终面积差。都用 canvas 是为了和棋盘同一套像素绘制 */
+        #wrBar, #areaBar {
             display: none;
             width: 46px;
             height: 420px;
@@ -278,15 +279,33 @@
         #valueCurve {
             display: block;
             width: 100%;
-            height: 80px;
+            height: 88px;
             background: #2f2a24;
             border-radius: 8px;
             box-shadow: none;
             cursor: pointer;
-            margin: 4px 0 2px 0;
+            margin: 2px 0 2px 0;
         }
+        .rp-curve-wrap { margin-top: auto; flex-shrink: 0; }
+        .rp-legend {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            font-size: 11px;
+            color: #c7a77d;
+            margin-top: 8px;
+        }
+        .rp-legend i {
+            display: inline-block;
+            width: 20px;
+            border-top: 2px solid #d13f3f;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .rp-legend i.dash { border-top-style: dashed; border-top-color: #f0d4a0; }
         #analysisPanel {
             display: none;
+            flex-direction: column;
             width: 300px;
             align-self: stretch;
             background: #4d4235;
@@ -295,7 +314,8 @@
             box-shadow: inset 0 2px 6px #1e1a16;
             font-size: 13px;
             color: #e8dccc;
-            overflow: hidden;
+            /* 面板里东西多（读数+首选+导航+折线），高度不够时宁可滚动，也不能把"退出复盘"挤出可视区 */
+            overflow-y: auto;
         }
         #analysisPanel .rp-head {
             display: flex;
@@ -328,6 +348,10 @@
             word-break: break-word;
         }
         #analysisPanel .rp-move.best { background: #52452f; }
+        /* 前三选都能点：点谁就按谁画棋盘，所以选中项要一眼看出来 */
+        #analysisPanel .rp-move.pick { cursor: pointer; border-left: 3px solid #6b5c42; }
+        #analysisPanel .rp-move.pick:hover { background: #4a4033; }
+        #analysisPanel .rp-move.sel { border-left-color: #ffcc00; background: #5a4a2e; }
         #analysisPanel .rp-actual { color: #c7a77d; font-size: 12px; margin-top: 6px; }
         .rp-btn {
             background: #5a4a3a;
@@ -394,7 +418,12 @@
                 padding: 10px;
             }
             #boardRow { flex-wrap: wrap; gap: 8px; }
-            #valueBar { width: 26px; height: min(92vw, 330px); }
+            #boardRow.in-replay { gap: 6px; }
+            #boardRow.in-replay .board-wrapper { padding: 6px; }
+            /* 两条形势条挤进来的那一行放不下原来的 92vw：复盘时棋盘让出宽度，窄屏才不横向溢出 */
+            #boardRow.in-replay canvas { width: min(72vw, 300px); height: min(72vw, 300px); }
+            #wrBar, #areaBar { width: 26px; height: min(92vw, 330px); }
+            #boardRow.in-replay #wrBar, #boardRow.in-replay #areaBar { width: 18px; height: min(72vw, 300px); }
             #analysisPanel { width: 100%; align-self: auto; }
             canvas {
                 width: min(92vw, 330px);
@@ -463,23 +492,17 @@
         <button class="mode-btn" data-mode="p2p">🌐 联机对战</button>
     </div>
     <div id="boardRow">
+        <canvas id="wrBar" width="46" height="420" style="display:none"></canvas>
         <div class="board-wrapper">
             <canvas id="boardCanvas" width="420" height="420"></canvas>
         </div>
-        <canvas id="valueBar" width="46" height="420" style="display:none"></canvas>
+        <canvas id="areaBar" width="46" height="420" style="display:none"></canvas>
         <aside id="analysisPanel">
             <div class="rp-head">
                 <span>复盘分析</span>
                 <span id="rpFrameNo">0 / 0</span>
             </div>
-            <canvas id="valueCurve" width="272" height="80"></canvas>
-            <div class="rp-nav">
-                <button class="rp-btn" id="rpPrev">◀ 上一手</button>
-                <button class="rp-btn" id="rpNext">下一手 ▶</button>
-                <button class="rp-btn" id="rpFirst">开局</button>
-                <button class="rp-btn" id="rpLast">终局</button>
-            </div>
-            <div class="rp-val" id="rpValue">局面价值 —</div>
+            <div class="rp-val" id="rpValue">推演胜率 —</div>
             <div class="rp-sub" id="rpValueSub">等待评估…</div>
             <div class="rp-nav" id="rpViewRow" style="display:none">
                 <button class="rp-btn" id="rpViewRed">视角：红方</button>
@@ -488,6 +511,19 @@
             <div class="rp-sub" id="rpSugHead">通玄首选</div>
             <div class="rp-list" id="rpMoves">—</div>
             <div class="rp-actual" id="rpActual"></div>
+            <div class="rp-nav">
+                <button class="rp-btn" id="rpPrev">◀ 上一手</button>
+                <button class="rp-btn" id="rpNext">下一手 ▶</button>
+                <button class="rp-btn" id="rpFirst">开局</button>
+                <button class="rp-btn" id="rpLast">终局</button>
+            </div>
+            <div class="rp-curve-wrap">
+                <div class="rp-legend" id="rpLegend">
+                    <span><i id="lgWrSwatch"></i>胜率（实线 · 50% 均势）</span>
+                    <span><i class="dash"></i>最终面积差（虚线 · ±48 格）</span>
+                </div>
+                <canvas id="valueCurve" width="272" height="88"></canvas>
+            </div>
             <div class="rp-nav">
                 <button class="rp-btn rp-exit" id="rpExit">退出复盘</button>
                 <button class="rp-btn" id="rpRetry" style="display:none">重试评估</button>
@@ -566,7 +602,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.0 2026-10-29  感谢游玩~
+        <br>版本信息：Version 3.1.1 2026-10-29  感谢游玩~
     </div>
 </div>
 <script>
@@ -1818,7 +1854,7 @@ self.onmessage = function(e) {
     // 不碰 think 的 nnAbort/进度条：复盘时根本没有对局在跑，两条通道不会撞车。
     const nnJobs = new Map();
     let nnJobSeq = 1e9;   // 对局 id 从 1 递增，复盘 id 从 1e9 递增，互不串台
-    function nnAsk(kind, payload, timeoutMs) {
+    function nnAsk(kind, payload, timeoutMs, onPartial) {
         return getNNWorker().then(worker => {
             if (!worker) throw new Error(nnWhy || '通玄不可用');
             const id = ++nnJobSeq;
@@ -1828,6 +1864,7 @@ self.onmessage = function(e) {
                     rej(new Error(kind === 'analyze' ? '整局评估超时' : '本手评估超时'));
                 }, timeoutMs);
                 nnJobs.set(id, {
+                    partial: onPartial,
                     done: (msg) => {
                         clearTimeout(timer); nnJobs.delete(id);
                         if (msg.error || msg.message) rej(new Error(msg.error || msg.message));
@@ -1843,7 +1880,11 @@ self.onmessage = function(e) {
     }
     function nnResolveJob(m) {
         const j = nnJobs.get(m.id);
-        if (j) j.done(m);
+        if (j) {
+            // 整局评估是一帧一帧回流的分片消息：画完这片就继续等，不能提前把 Promise 结掉
+            if (m.partial) { if (j.partial) j.partial(m); return; }
+            j.done(m);
+        }
     }
 
     function nnPersistentListener(e) {
@@ -1865,7 +1906,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v2';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v4';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -2667,24 +2708,40 @@ self.onmessage = function(e) {
     // ==================== 复盘分析（通玄判读）====================
     /*
      * frames[k] = 第 k 个"轮到谁"的局面，move = 从这一局面上实际走的那一手（终局帧为 null）。
-     * 于是看第 k 帧时：通玄首选 = 从 frames[k] 搜出来的前三手，values[k] 也是 frames[k] 的价值。
-     * 网络的 value 是「行棋方视角」，展示前一律翻成「己方视角」；它不是胜率
-     * （训练目标 z = 0.7·胜负 + 0.3·面积差，开局没有隔离时基本只能表示倾向）。
+     * 于是看第 k 帧时：通玄首选 = 从 frames[k] 搜出来的前三手（点哪一行就按哪一行画盘），
+     * values[k] 也是 frames[k] 的判读结果（{solved,rn,rw,rc,over,tn,tw,td}）。
+     * 两个读数同源：同一批随机推演（rw = 胜 1 / 和 0.5 / 负 0 的均值 ⇒ 胜率，rc = 终局面积差的均值
+     * ⇒ 期望最终面积差），左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
+     * 不用网络的 value 反解面积差 —— 训练目标 z = sign(d)·(0.7+0.3·|d|/49) 里那个 0.7 是胜负打底，
+     * 全盘实测 |v|≤0.59 全落在死区内，反解出来每帧都是 0 格（NOTES §39）；
+     * 也不用搜索树里的终局样本 —— 400 访问在中盘只走到 0–32 个终局、还全挤在最佳线路上，
+     * 一报就是 0% 或 100%（NOTES §42 实测）。要"模型觉得这手好不好"看首选行的 Q 与访问。
      */
     const RP_DIRS = ['top', 'right', 'bottom', 'left'];   // 顺序必须与 siege_engine 的 WALL_DIRS 一致
     const RP_WALL_ZH = { top: '上', right: '右', bottom: '下', left: '左' };
     const RP_COLORS = ['#d13f3f', '#3a6ea5'];
+    /* 胜率的三道保险（缺一会出现"开局莫名其妙 100%"）：
+     *  · 收缩：先掺 RP_PRIOR 个"平手"样本，样本极少时也够不到 100%，样本一多就几乎不受影响；
+     *  · 置信：终局样本少于 RP_MIN_N 算不可信（条体半透明 + ?）—— 比旧口径拿 !sep 当置信是真依据；
+     *  · 无样本：一次终局都没推到就什么都不画、读数写"未定"，绝不把 0/0 当成 0%（那是"必败"）。 */
+    const RP_PRIOR = 10;
+    const RP_MIN_N = 20;
+    // 面积差形势条的量程：7×7 一共 49 格，一方最多全占、另一方原地 0 格 ⇒ 理论 ±48，满条即 ±48
+    const RP_CELL_MAX = 48;
     const RP_WHY = {
         'immediate-win': '有直接制胜的着法，规则判定直接采纳（没跑搜索，所以没有对比数据）',
         'only-safe': '只有这一手不送杀，规则判定直接采纳（没跑搜索）',
         'lost-save-area': '怎么都输，挑保住地盘最大的那一手（没跑搜索）',
         'pathfix': '搜索路径重建失败，走了兜底着法'
     };
-    const replay = { active: false, frames: [], values: [], idx: 0, saved: null, selfIdx: 0, sug: null, seq: 0, analyzed: false };
+    const replay = { active: false, frames: [], values: [], idx: 0, saved: null, selfIdx: 0, sug: null, pick: 0, seq: 0 };
 
-    const valueBarEl = document.getElementById('valueBar');
+    const wrBarEl = document.getElementById('wrBar');
+    const areaBarEl = document.getElementById('areaBar');
+    const boardRowEl = document.getElementById('boardRow');
     const rpPanel = document.getElementById('analysisPanel');
     const rpCurve = document.getElementById('valueCurve');
+    const lgWrSwatch = document.getElementById('lgWrSwatch');
     const rpFrameNo = document.getElementById('rpFrameNo');
     const rpValue = document.getElementById('rpValue');
     const rpValueSub = document.getElementById('rpValueSub');
@@ -2776,12 +2833,23 @@ self.onmessage = function(e) {
         return (mv.to.row * BOARD_SIZE + mv.to.col) * 4 + RP_DIRS.indexOf(mv.wall);
     }
 
-    // 网络 value 是行棋方视角，翻成"己方视角"
+    // 帧存的是"本帧行棋方"的推演结果，翻成己方视角：胜率镜像 1-wr，面积差镜像取相反数。
     function selfView(k) {
-        const a = replay.values[k];
-        if (!a) return null;
-        const p = replay.frames[k].state.currentPlayer;
-        return { v: p === replay.selfIdx ? a.v : -a.v, low: !!a.low, sep: !!a.sep, s0: a.s0, s1: a.s1 };
+        const a = replay.values[k], f = replay.frames[k];
+        if (!a || !f) return null;
+        let wr, cells, n, certain;
+        if (a.over) {                       // 这帧就是终局：胜负与面积差都写在局面里，不是估计
+            wr = a.solved > 0 ? 1 : (a.solved < 0 ? 0 : 0.5);
+            cells = a.rc || 0; n = 0; certain = true;
+        } else if (a.solved) {              // 规则已判定（有必胜手 / 怎么都输），胜率不收缩
+            wr = a.solved > 0 ? 1 : 0;
+            cells = a.rc || 0; n = 0; certain = true;
+        } else if (a.rn) {
+            wr = (a.rw + RP_PRIOR / 2) / (a.rn + RP_PRIOR);
+            cells = a.rc || 0; n = a.rn; certain = false;
+        } else return null;                                                     // 一个终局都没推到 —— 没依据就不编数
+        if (f.state.currentPlayer !== replay.selfIdx) { wr = 1 - wr; cells = -cells; }
+        return { wr, cells, n, certain, low: !certain && n < RP_MIN_N };
     }
 
     function applyReplayFrame(k) {
@@ -2807,6 +2875,7 @@ self.onmessage = function(e) {
         game.turnCount = f.state.turnCount;
         game.aiThinking = false;
         replay.sug = null;
+        replay.pick = 0;
         replay.seq++;
         if (!f.state.gameOver) requestSuggestion(f.state);
         updateUI();
@@ -2814,7 +2883,7 @@ self.onmessage = function(e) {
         statusMessage.textContent = '🔍 复盘第 ' + k + ' 手 · 操作键已停用（Esc 退出）';
         drawBoard();
         renderReplayPanel();
-        drawValueBar();
+        drawBars();
         drawCurve();
     }
 
@@ -2838,11 +2907,12 @@ self.onmessage = function(e) {
             resultRecorded: game.resultRecorded
         };
         replay.active = true;
-        replay.analyzed = false;
         replay.values = new Array(replay.frames.length).fill(null);
         replay.selfIdx = (game.mode === 'p2p' && (wsPlayerIndex === 0 || wsPlayerIndex === 1)) ? wsPlayerIndex : 0;
-        if (valueBarEl) valueBarEl.style.display = 'block';
-        if (rpPanel) rpPanel.style.display = 'block';
+        if (wrBarEl) wrBarEl.style.display = 'block';
+        if (areaBarEl) areaBarEl.style.display = 'block';
+        if (boardRowEl) boardRowEl.classList.add('in-replay');
+        if (rpPanel) rpPanel.style.display = 'flex';
         if (analyzeBtn) analyzeBtn.style.display = 'none';
         if (rpViewRow) rpViewRow.style.display = (game.mode === 'pvp') ? 'flex' : 'none';
         gotoFrame(replay.frames.length - 1);
@@ -2870,30 +2940,68 @@ self.onmessage = function(e) {
     }
 
     function hideReplayUI() {
-        if (valueBarEl) valueBarEl.style.display = 'none';
+        if (wrBarEl) wrBarEl.style.display = 'none';
+        if (areaBarEl) areaBarEl.style.display = 'none';
+        if (boardRowEl) boardRowEl.classList.remove('in-replay');
         if (rpPanel) rpPanel.style.display = 'none';
         if (analyzeBtn) analyzeBtn.style.display = game.gameOver && replay.frames.length > 1 ? '' : 'none';
     }
 
+    // 页面作用域里没有"按 state 算连通域"的函数（那份只存在于 AI Worker 的源码字符串里），
+    // 所以借用读全局 game 的 computeRegions()：临时换成这一帧、算完马上换回去（同步，中间不渲染）
+    function rpAreaDiff(state) {
+        const saveBoard = game.board, savePlayers = game.players;
+        game.board = state.board;
+        game.players = state.players;
+        const [s0, s1] = computeRegions();
+        game.board = saveBoard;
+        game.players = savePlayers;
+        return state.currentPlayer === 0 ? s0 - s1 : s1 - s0;
+    }
+
+    // 终局帧的胜负与面积就写在局面里，不必问模型（进入复盘第一眼停在终局帧，等整局判读跑到那儿才出读数很难看）
+    function seedTerminalFrames() {
+        for (let k = 0; k < replay.frames.length; k++) {
+            const st = replay.frames[k].state;
+            if (!st.gameOver) continue;
+            const w = st.winner;
+            const solved = (w === 0 || w === 1) ? (w === st.currentPlayer ? 1 : -1) : 0;
+            replay.values[k] = { solved, over: true, rn: 0, rw: 0, rc: rpAreaDiff(st), tn: 0, tw: 0, td: 0 };
+        }
+    }
+
     function refreshAnalysis() {
         if (!replay.frames.length) return;
+        const seq = replay.seq;
         rpRetry.style.display = 'none';
-        replay.analyzed = false;
-        rpValue.textContent = '局面价值 —';
-        rpValueSub.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载') + '（走法回顾不受影响）') : '整局评估中…';
-        drawValueBar();
+        replay.values = new Array(replay.frames.length).fill(null);
+        seedTerminalFrames();
+        rpValueSub.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载') + '（走法回顾不受影响）') : '整局判读中…';
+        renderReplayPanel();
+        drawBars();
         drawCurve();
-        nnAsk('analyze', replay.frames.map(f => f.state), 90000).then(msg => {
-            replay.values = msg.values;
-            replay.analyzed = true;
+        const states = replay.frames.map(f => f.state);
+        let got = 0;
+        const onPartial = (msg) => {
+            if (seq !== replay.seq || !replay.active) return;
+            if (msg.index >= 0 && msg.index < replay.values.length) replay.values[msg.index] = msg.value;
+            got++;
+            rpValueSub.textContent = '整局判读 ' + got + '/' + states.length + '…';
             renderReplayPanel();
-            drawValueBar();
+            drawBars();
+        };
+        // 一帧一次 400 访问搜索，整局 30-60 帧要十几秒：先让用户看到已经判完的那些帧
+        nnAsk('analyze', states, 180000, onPartial).then(() => {
+            if (seq !== replay.seq) return;
+            rpValueSub.textContent = '';
+            renderReplayPanel();
+            drawBars();
             drawCurve();
         }).catch(err => {
-            replay.values = new Array(replay.frames.length).fill(null);
-            rpValueSub.textContent = '整局评估失败：' + err.message;
+            if (seq !== replay.seq) return;
+            rpValueSub.textContent = '整局判读失败：' + err.message;
             rpRetry.style.display = '';
-            drawValueBar();
+            drawBars();
             drawCurve();
         });
     }
@@ -2911,8 +3019,13 @@ self.onmessage = function(e) {
         nnAsk('suggest', state, 20000).then(msg => {
             if (seq !== replay.seq) return;
             replay.sug = msg;
-            renderSuggestions();
+            replay.pick = 0;                      // 新的一手评估 = 重新从一选开始看
+            // 本手这一搜顺带做了 300 局推演，直接当第 idx 帧的读数用（整局折线随后独立再推一遍）
+            const m = msg.meta;
+            if (m && (m.solved || m.rn)) replay.values[replay.idx] = { solved: m.solved || 0, rn: m.rn || 0, rw: m.rw || 0, rc: m.rc || 0 };
+            renderReplayPanel();      // 内含 renderSuggestions + drawCurve
             drawBoard();
+            drawBars();
         }).catch(err => {
             if (seq !== replay.seq) return;
             replay.sug = null;
@@ -2974,31 +3087,33 @@ self.onmessage = function(e) {
             rpMoves.appendChild(d);
             return;
         }
-        rpSugHead.textContent = '通玄首选（' + meta.sims + ' 访问 / ' + meta.ms + 'ms）';
+        rpSugHead.textContent = '通玄首选（' + meta.sims + ' 访问 / ' + meta.ms + 'ms）· 点一行看它怎么走';
         const f = replay.frames[replay.idx];
         const actualId = f && f.move ? moveActionId(f.move) : -1;
         const MARKS = '①②③④⑤';
+        if (!meta.top[replay.pick]) replay.pick = 0;
         meta.top.forEach((t, i) => {
             const cell = Math.floor(t.a / 4);
             const r = Math.floor(cell / BOARD_SIZE), c = cell % BOARD_SIZE;
             const dir = RP_DIRS[t.a % 4];
             const steps = rpStepsTo(r, c);
             const d = document.createElement('div');
-            d.className = 'rp-move' + (i === 0 ? ' best' : '');
+            d.className = 'rp-move pick' + (i === 0 ? ' best' : '') + (i === replay.pick ? ' sel' : '');
+            d.title = '点这一行 = 棋盘改成显示这个选择';
             d.textContent = MARKS[i] + ' →(' + r + ',' + c + ') ' + (steps === null ? '?' : steps) + '步' +
                 ' · 墙' + RP_WALL_ZH[dir] +
                 ' · 访问' + t.n +
                 ' · Q' + (t.q >= 0 ? '+' : '') + t.q.toFixed(2) +
                 ' · 先验' + t.p.toFixed(2) +
+                (i === replay.pick ? ' ◀棋盘显示' : '') +
                 (t.a === actualId ? ' ✓本局实际' : '');
+            d.addEventListener('click', () => {
+                replay.pick = i;
+                renderSuggestions();
+                drawBoard();
+            });
             rpMoves.appendChild(d);
         });
-        if (meta.excluded) {
-            const d = document.createElement('div');
-            d.className = 'rp-sub';
-            d.textContent = '（已排除 ' + meta.excluded + ' 个自困/送杀的着法）';
-            rpMoves.appendChild(d);
-        }
     }
 
     function renderReplayPanel() {
@@ -3010,17 +3125,18 @@ self.onmessage = function(e) {
         rpNext.disabled = k >= n - 1;
         const sv = selfView(k);
         if (!sv) {
-            if (!replay.analyzed && !nnDisabled) rpValue.textContent = '局面价值 —';
+            rpValue.textContent = '推演胜率 —（' + rpName(replay.selfIdx) + '视角）';
+            if (f && f.state.gameOver) rpValue.textContent = '本手已终局';
         } else {
-            const read = Math.round(sv.v * 100);
-            rpValue.textContent = '局面价值 ' + (read > 0 ? '+' : '') + read + '（' + rpName(replay.selfIdx) + '视角，±100）';
-            const own = replay.selfIdx;
-            const sMine = own === 0 ? sv.s0 : sv.s1, sOpp = own === 0 ? sv.s1 : sv.s0;
-            rpValueSub.textContent = (sv.sep
-                ? ('已分隔：' + rpName(own) + ' ' + sMine + ' 格 vs ' + rpName(1 - own) + ' ' + sOpp + ' 格 · ')
-                : ('尚未分隔（同一连通域 ' + sMine + ' 格）· '))
-                + (sv.low ? '还没有面积差依据，读数只表示倾向' : '读数是通玄 value，不是胜率');
+            const n = Math.round(sv.cells);
+            // 依据要分开写：规则判定的那一帧胜率是判定，但面积差仍然是那 300 局随机推演的均值
+            const basis = sv.certain
+                ? (sv.n ? '规则已判定 · 随机推演 ' + sv.n + ' 局' : '规则已判定')
+                : '随机推演 ' + sv.n + ' 局' + (sv.low ? '，偏少' : '');
+            rpValue.textContent = '推演胜率 ' + Math.round(sv.wr * 100) + '% · 期望最终面积差 ' +
+                (n >= 0 ? '+' : '-') + Math.abs(n) + ' 格（' + rpName(replay.selfIdx) + '视角 · ' + basis + '）';
         }
+        if (lgWrSwatch) lgWrSwatch.style.borderTopColor = RP_COLORS[replay.selfIdx];
         rpActual.textContent = '本局实际：' + fmtMove(f && f.move);
         rpViewRed.classList.toggle('best', replay.selfIdx === 0);
         rpViewBlue.classList.toggle('best', replay.selfIdx === 1);
@@ -3028,31 +3144,62 @@ self.onmessage = function(e) {
         drawCurve();
     }
 
-    function drawValueBar() {
-        if (!valueBarEl || !replay.active) return;
-        const c = valueBarEl.getContext('2d');
-        const w = valueBarEl.width, h = valueBarEl.height, zero = h / 2;
+    function barBase(c, w, h) {
         c.clearRect(0, 0, w, h);
         c.fillStyle = '#3a332b'; c.fillRect(0, 0, w, h);
         c.setLineDash([4, 4]); c.strokeStyle = 'rgba(255,255,255,0.5)'; c.lineWidth = 1;
-        c.beginPath(); c.moveTo(0, zero); c.lineTo(w, zero); c.stroke(); c.setLineDash([]);
+        c.beginPath(); c.moveTo(0, h / 2); c.lineTo(w, h / 2); c.stroke(); c.setLineDash([]);
+    }
+
+    function barMark(c, w, h, y, text, low) {
+        c.font = 'bold 12px sans-serif'; c.textAlign = 'center';
+        const ty = Math.max(12, Math.min(h - 5, y - 5));
+        c.lineWidth = 3; c.strokeStyle = 'rgba(0,0,0,0.6)'; c.strokeText(text, w / 2, ty);
+        c.fillStyle = '#fff'; c.fillText(text, w / 2, ty);
+        if (low) { c.font = '10px sans-serif'; c.fillStyle = '#e0c080'; c.fillText('?', w / 2, 11); }
+    }
+
+    // 左条：己方胜率，分界线以下染己方色（100% → 满条，50% → 正中均势线）
+    function drawWrBar() {
+        if (!wrBarEl || !replay.active) return;
+        const c = wrBarEl.getContext('2d');
+        const w = wrBarEl.width, h = wrBarEl.height;
+        barBase(c, w, h);
         const sv = selfView(replay.idx);
-        if (!sv) return;
-        // v=+1 → 分界线推到顶端（整条都是己方色），v=-1 → 推到底，0 正中
-        const y = zero * (1 - sv.v);
+        if (!sv) return;                       // 没有依据就只留底色：半条假色块比空条更坏
+        const y = h * (1 - sv.wr);
         c.globalAlpha = sv.low ? 0.4 : 1;
         c.fillStyle = RP_COLORS[replay.selfIdx]; c.fillRect(0, y, w, h - y);
         c.fillStyle = RP_COLORS[1 - replay.selfIdx]; c.fillRect(0, 0, w, y);
         c.globalAlpha = 1;
         c.strokeStyle = '#ffffff'; c.lineWidth = 2;
         c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
-        const read = Math.round(sv.v * 100);
-        const txt = (read > 0 ? '+' : '') + read;
-        c.font = 'bold 12px sans-serif'; c.textAlign = 'center';
-        const ty = Math.max(12, Math.min(h - 5, y - 5));
-        c.lineWidth = 3; c.strokeStyle = 'rgba(0,0,0,0.6)'; c.strokeText(txt, w / 2, ty);
-        c.fillStyle = '#fff'; c.fillText(txt, w / 2, ty);
-        if (sv.low) { c.font = '10px sans-serif'; c.fillStyle = '#e0c080'; c.fillText('?', w / 2, 11); }
+        barMark(c, w, h, y, Math.round(sv.wr * 100) + '%', sv.low);
+    }
+
+    // 右条：期望最终面积差，发散量纲 —— 中线是 0 格，往上己方多、往下己方少，满条 ±RP_CELL_MAX 格
+    function drawAreaBar() {
+        if (!areaBarEl || !replay.active) return;
+        const c = areaBarEl.getContext('2d');
+        const w = areaBarEl.width, h = areaBarEl.height, zero = h / 2;
+        barBase(c, w, h);
+        const sv = selfView(replay.idx);
+        if (!sv) return;
+        const cells = Math.max(-RP_CELL_MAX, Math.min(RP_CELL_MAX, sv.cells));
+        const y = zero * (1 - cells / RP_CELL_MAX);
+        c.globalAlpha = sv.low ? 0.4 : 1;
+        c.fillStyle = RP_COLORS[cells >= 0 ? replay.selfIdx : 1 - replay.selfIdx];
+        c.fillRect(0, Math.min(y, zero), w, Math.abs(zero - y));
+        c.globalAlpha = 1;
+        c.strokeStyle = '#ffffff'; c.lineWidth = 2;
+        c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+        const n = Math.round(cells);
+        barMark(c, w, h, y, (n >= 0 ? '+' : '-') + Math.abs(n) + '格', sv.low);
+    }
+
+    function drawBars() {
+        drawWrBar();
+        drawAreaBar();
     }
 
     function drawCurve() {
@@ -3061,23 +3208,32 @@ self.onmessage = function(e) {
         const w = rpCurve.width, h = rpCurve.height, pad = 6, zero = h / 2;
         c.clearRect(0, 0, w, h);
         c.fillStyle = '#2f2a24'; c.fillRect(0, 0, w, h);
+        // 两个量纲共用这张图：中线同时是"50% 胜率"和"0 格面积差"，所以一条虚线管两条读数
         c.setLineDash([3, 3]); c.strokeStyle = 'rgba(255,255,255,0.3)'; c.lineWidth = 1;
         c.beginPath(); c.moveTo(0, zero); c.lineTo(w, zero); c.stroke(); c.setLineDash([]);
         const n = replay.frames.length;
         if (n < 2) return;
         const stepX = (w - 2 * pad) / (n - 1);
         const xOf = k => pad + k * stepX;
-        const yOf = v => (h - pad) - (v + 1) / 2 * (h - 2 * pad);
+        const yOfWr = sv => (h - pad) - sv.wr * (h - 2 * pad);
+        const yOfCells = sv => zero - Math.max(-1, Math.min(1, sv.cells / RP_CELL_MAX)) * (zero - pad);
+        // 断点（没判读的帧）不连线：整局判读是逐帧回来的，连过去就成了一条假直线
+        const polyline = (yOf) => {
+            c.beginPath();
+            let started = false;
+            for (let k = 0; k < n; k++) {
+                const sv = selfView(k);
+                if (!sv) { started = false; continue; }
+                const x = xOf(k), y = yOf(sv);
+                if (!started) { c.moveTo(x, y); started = true; } else c.lineTo(x, y);
+            }
+            c.stroke();
+        };
+        c.setLineDash([5, 3]); c.strokeStyle = '#f0d4a0'; c.lineWidth = 1.2;
+        polyline(yOfCells);
+        c.setLineDash([]);
         c.strokeStyle = RP_COLORS[replay.selfIdx]; c.lineWidth = 1.6;
-        c.beginPath();
-        let started = false;
-        for (let k = 0; k < n; k++) {
-            const sv = selfView(k);
-            if (!sv) { started = false; continue; }
-            const x = xOf(k), y = yOf(sv.v);
-            if (!started) { c.moveTo(x, y); started = true; } else c.lineTo(x, y);
-        }
-        c.stroke();
+        polyline(yOfWr);
         c.strokeStyle = 'rgba(255,255,255,0.6)'; c.lineWidth = 1;
         c.beginPath(); c.moveTo(xOf(replay.idx), 2); c.lineTo(xOf(replay.idx), h - 2); c.stroke();
     }
@@ -3095,23 +3251,26 @@ self.onmessage = function(e) {
         ctx.restore();
     }
 
-    // 棋盘叠加：黄=模型首选，对手色实线=本局实际下的墙
+    // 棋盘叠加：黄格=选中的模型首选落点，行棋方色实线=它要放的墙（本局实际怎么走的不再画到盘上）
     function drawReplayOverlay() {
         const f = replay.frames[replay.idx];
         if (!f) return;
-        if (f.move && f.move.wall) {
-            rpStrokeEdge(f.move.to.row, f.move.to.col, f.move.wall, RP_COLORS[1 - f.move.player], 7, []);
-        }
         const top = replay.sug && replay.sug.meta && replay.sug.meta.top;
         if (!top || !top.length) return;
-        const a = top[0].a;
+        const i = Math.min(replay.pick, top.length - 1);
+        const a = top[i].a;
         const cell = Math.floor(a / 4);
         const r = Math.floor(cell / BOARD_SIZE), c = cell % BOARD_SIZE;
         ctx.fillStyle = 'rgba(255, 215, 0, 0.35)';
         ctx.fillRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
         ctx.strokeStyle = 'rgba(255, 215, 0, 0.9)'; ctx.lineWidth = 3;
         ctx.strokeRect(c * CELL_SIZE + 1, r * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2);
-        rpStrokeEdge(r, c, RP_DIRS[a % 4], '#ffcc00', 6, [8, 6]);
+        rpStrokeEdge(r, c, RP_DIRS[a % 4], RP_COLORS[f.state.currentPlayer], 7, []);
+        ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
+        ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+        ctx.strokeText('①②③④⑤'[i], c * CELL_SIZE + 13, r * CELL_SIZE + 17);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('①②③④⑤'[i], c * CELL_SIZE + 13, r * CELL_SIZE + 17);
     }
 
     if (analyzeBtn) analyzeBtn.addEventListener('click', enterReplay);
@@ -3127,7 +3286,7 @@ self.onmessage = function(e) {
         }
         refreshAnalysis();
     });
-    const rpSetView = (i) => { replay.selfIdx = i; renderReplayPanel(); drawValueBar(); };
+    const rpSetView = (i) => { replay.selfIdx = i; renderReplayPanel(); drawBars(); };
     if (rpViewRed) rpViewRed.addEventListener('click', () => rpSetView(0));
     if (rpViewBlue) rpViewBlue.addEventListener('click', () => rpSetView(1));
     if (rpCurve) rpCurve.addEventListener('click', (e) => {
