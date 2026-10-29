@@ -23,7 +23,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v4';
+const REV = 'v5';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -152,7 +152,7 @@ async function analyzeFrame(state) {
     const t = E.terminalInfo(state);
     if (t) return { solved: t.winner === 'draw' ? 0 : (t.winner === p ? 1 : -1), rn: 0, rw: 0,
                     rc: p === 0 ? t.s0 - t.s1 : t.s1 - t.s0, over: true, tn: 0, tw: 0, td: 0 };
-    const roll = NN.rolloutScore(state, ANALYZE.rollouts, 120);
+    const roll = NN.rolloutScore(state, ANALYZE.rollouts, 84);
     const r = await NN.chooseAction(state, p, { net, budgetMs: ANALYZE.budgetMs, simsMax: ANALYZE.simsMax, cPuct: 1.5 });
     const m = (r && r.meta) || {};
     return { solved: m.solved || 0, rn: roll.n, rw: roll.w, rc: roll.n ? roll.d / roll.n : 0,
@@ -181,7 +181,7 @@ async function runAnalyze(states, id) {
 
 async function runSuggest(state, id) {
     const player = state.currentPlayer;
-    const roll = NN.rolloutScore(state, REPLAY.rollouts, 120);
+    const roll = NN.rolloutScore(state, REPLAY.rollouts, 84);
     const r = await NN.chooseAction(state, player, {
         net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: 1.5, topK: REPLAY.topK
     });

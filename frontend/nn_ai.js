@@ -305,10 +305,12 @@
      * 它答的问题是"这局面放任走下去谁会输"（形势），不是"通玄会怎么下"（那看首选行的 Q 与访问）。
      * 一次遍历顺带把终局面积差也累计下来（terminalInfo 本来就算好了 s0/s1）⇒ 胜率与期望面积差同价、同一批样本。
      * 没在 cap 手内终局的推演整条丢弃 —— 算成和棋会把"没结果"偷偷记成"各半"。
+     * cap 默认 84：7×7 的内部边一共 2×7×6=84 条，一手放一条且墙不会消失 ⇒ 84 手内必然分隔，
+     * 这个上限在实际对局里碰不到，留着只是防止推演失控的护栏（同理"无合法着法"那条分支也到不了）。
      */
     function rolloutScore(state, n, cap) {
         const p = state.currentPlayer;
-        const maxPly = cap || 120;
+        const maxPly = cap || 84;
         let cnt = 0, w = 0, d = 0;
         for (let i = 0; i < n; i++) {
             const s = E.cloneState(state);
@@ -317,7 +319,7 @@
                 const t = E.terminalInfo(s);
                 if (t) { res = t; break; }
                 const legal = E.legalActions(s, s.currentPlayer);
-                if (!legal.length) { res = { s0: 0, s1: 0, winner: 'draw' }; break; }
+                if (!legal.length) break;
                 E.applyAction(s, s.currentPlayer, legal[(Math.random() * legal.length) | 0]);
             }
             if (!res) continue;

@@ -492,11 +492,11 @@
         <button class="mode-btn" data-mode="p2p">🌐 联机对战</button>
     </div>
     <div id="boardRow">
-        <canvas id="wrBar" width="46" height="420" style="display:none"></canvas>
+        <canvas id="wrBar" width="46" height="420" title="推演胜率（己方视角，50% 均势）" style="display:none"></canvas>
         <div class="board-wrapper">
             <canvas id="boardCanvas" width="420" height="420"></canvas>
         </div>
-        <canvas id="areaBar" width="46" height="420" style="display:none"></canvas>
+        <canvas id="areaBar" width="46" height="420" title="期望最终面积差（己方视角，单位：格，中线 0）" style="display:none"></canvas>
         <aside id="analysisPanel">
             <div class="rp-head">
                 <span>复盘分析</span>
@@ -602,7 +602,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.1 2026-10-29  感谢游玩~
+        <br>版本信息：Version 3.1.2 2026-10-29  感谢游玩~
     </div>
 </div>
 <script>
@@ -1906,7 +1906,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v4';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v5';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -2728,13 +2728,16 @@ self.onmessage = function(e) {
     const RP_MIN_N = 20;
     // 面积差形势条的量程：7×7 一共 49 格，一方最多全占、另一方原地 0 格 ⇒ 理论 ±48，满条即 ±48
     const RP_CELL_MAX = 48;
+    // 读数留一位小数（300 局推演的标准误约 ±3pp，第二位小数只是噪声）；-0.04 这类 tiny 负数统一显示成 +0.0
+    const fmtPct = wr => (wr * 100).toFixed(1) + '%';
+    const fmtCells = v => (v < -0.05 ? '-' : '+') + Math.abs(v).toFixed(1);
     const RP_WHY = {
         'immediate-win': '有直接制胜的着法，规则判定直接采纳（没跑搜索，所以没有对比数据）',
         'only-safe': '只有这一手不送杀，规则判定直接采纳（没跑搜索）',
         'lost-save-area': '怎么都输，挑保住地盘最大的那一手（没跑搜索）',
         'pathfix': '搜索路径重建失败，走了兜底着法'
     };
-    const replay = { active: false, frames: [], values: [], idx: 0, saved: null, selfIdx: 0, sug: null, pick: 0, seq: 0 };
+    const replay = { active: false, frames: [], values: [], idx: 0, saved: null, selfIdx: 0, sug: null, sugFrame: -1, pick: 0, seq: 0, analyzeJob: 0 };
 
     const wrBarEl = document.getElementById('wrBar');
     const areaBarEl = document.getElementById('areaBar');
@@ -2874,13 +2877,12 @@ self.onmessage = function(e) {
         game.winner = f.state.gameOver ? f.state.winner : null;
         game.turnCount = f.state.turnCount;
         game.aiThinking = false;
-        replay.sug = null;
         replay.pick = 0;
         replay.seq++;
         if (!f.state.gameOver) requestSuggestion(f.state);
         updateUI();
         // 状态栏本来是写给"正在下的这盘"的，复盘里照抄会让人以为还能接着下
-        statusMessage.textContent = '🔍 复盘第 ' + k + ' 手 · 操作键已停用（Esc 退出）';
+        statusMessage.textContent = '🔍 复盘第 ' + (k + 1) + ' 手 · 操作键已停用（Esc 退出）';
         drawBoard();
         renderReplayPanel();
         drawBars();
@@ -2923,6 +2925,7 @@ self.onmessage = function(e) {
         if (!replay.active) return;
         replay.active = false;
         replay.seq++;
+        replay.analyzeJob++;
         const s = replay.saved;
         replay.saved = null;
         if (s) {
@@ -2972,7 +2975,7 @@ self.onmessage = function(e) {
 
     function refreshAnalysis() {
         if (!replay.frames.length) return;
-        const seq = replay.seq;
+        const job = ++replay.analyzeJob;
         rpRetry.style.display = 'none';
         replay.values = new Array(replay.frames.length).fill(null);
         seedTerminalFrames();
@@ -2982,23 +2985,25 @@ self.onmessage = function(e) {
         drawCurve();
         const states = replay.frames.map(f => f.state);
         let got = 0;
+        // 整局判读的生命周期跟"这次任务"走，不跟 replay.seq 走：seq 每翻一手就 +1，
+        // 拿它当作废条件会让后面所有帧的回流被丢掉，进度条永远停在用户第一次翻页时的那一格。
         const onPartial = (msg) => {
-            if (seq !== replay.seq || !replay.active) return;
             if (msg.index >= 0 && msg.index < replay.values.length) replay.values[msg.index] = msg.value;
             got++;
+            if (job !== replay.analyzeJob || !replay.active) return;
             rpValueSub.textContent = '整局判读 ' + got + '/' + states.length + '…';
             renderReplayPanel();
             drawBars();
         };
         // 一帧一次 400 访问搜索，整局 30-60 帧要十几秒：先让用户看到已经判完的那些帧
         nnAsk('analyze', states, 180000, onPartial).then(() => {
-            if (seq !== replay.seq) return;
+            if (job !== replay.analyzeJob || !replay.active) return;
             rpValueSub.textContent = '';
             renderReplayPanel();
             drawBars();
             drawCurve();
         }).catch(err => {
-            if (seq !== replay.seq) return;
+            if (job !== replay.analyzeJob || !replay.active) return;
             rpValueSub.textContent = '整局判读失败：' + err.message;
             rpRetry.style.display = '';
             drawBars();
@@ -3014,11 +3019,11 @@ self.onmessage = function(e) {
             rpSugHead.textContent = '通玄首选';
             return;
         }
-        rpSugHead.textContent = '通玄首选';
-        rpMoves.textContent = '本手评估中…';
+        // 不写"本手评估中…"清空旧行：上一帧的结果留着，新结果算好后整块替换（避免闪空白 + 高度跳动）
         nnAsk('suggest', state, 20000).then(msg => {
             if (seq !== replay.seq) return;
             replay.sug = msg;
+            replay.sugFrame = replay.idx;
             replay.pick = 0;                      // 新的一手评估 = 重新从一选开始看
             // 本手这一搜顺带做了 300 局推演，直接当第 idx 帧的读数用（整局折线随后独立再推一遍）
             const m = msg.meta;
@@ -3057,22 +3062,31 @@ self.onmessage = function(e) {
         return null;
     }
 
+    // 首选行是不是"当前这一帧"的？翻一手后新结果要半秒才回，这期间留着上一帧的行、不清空
+    // （清空会让面板闪一下空白、高度跟着跳，正是用户不要的效果）
+    function suggestionsFresh() {
+        return !!replay.sug && replay.sugFrame === replay.idx;
+    }
+
     function renderSuggestions() {
         if (!rpMoves) return;
-        rpMoves.textContent = '';
         const cur = replay.frames[replay.idx];
         if (cur && cur.state.gameOver) {
             rpSugHead.textContent = '通玄首选';
             rpMoves.textContent = '这一帧棋已经终局，没有下一手可评；点「上一手」看模型怎么选。';
             return;
         }
-        const s = replay.sug;
-        const meta = (s && s.meta) || null;
-        if (!s) {                       // 空白会让人以为面板坏了，这里一定要留句话
-            rpSugHead.textContent = '通玄首选';
-            rpMoves.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载')) : '本手评估中…';
+        if (!suggestionsFresh()) {
+            if (rpMoves.childNodes.length) rpSugHead.textContent = '通玄首选（本手重算中…）';
+            else {
+                rpSugHead.textContent = '通玄首选';
+                rpMoves.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载')) : '本手评估中…';
+            }
             return;
         }
+        rpMoves.textContent = '';
+        const s = replay.sug;
+        const meta = s.meta || null;
         if (!meta) {
             const d = document.createElement('div');
             d.className = 'rp-move';
@@ -3120,7 +3134,7 @@ self.onmessage = function(e) {
         if (!rpPanel || !replay.active) return;
         const n = replay.frames.length, k = replay.idx;
         const f = replay.frames[k];
-        rpFrameNo.textContent = '第 ' + k + ' / ' + (n - 1) + ' 手';
+        rpFrameNo.textContent = '第 ' + (k + 1) + ' / ' + n + ' 手';
         rpPrev.disabled = k <= 0;
         rpNext.disabled = k >= n - 1;
         const sv = selfView(k);
@@ -3128,13 +3142,12 @@ self.onmessage = function(e) {
             rpValue.textContent = '推演胜率 —（' + rpName(replay.selfIdx) + '视角）';
             if (f && f.state.gameOver) rpValue.textContent = '本手已终局';
         } else {
-            const n = Math.round(sv.cells);
             // 依据要分开写：规则判定的那一帧胜率是判定，但面积差仍然是那 300 局随机推演的均值
             const basis = sv.certain
                 ? (sv.n ? '规则已判定 · 随机推演 ' + sv.n + ' 局' : '规则已判定')
                 : '随机推演 ' + sv.n + ' 局' + (sv.low ? '，偏少' : '');
-            rpValue.textContent = '推演胜率 ' + Math.round(sv.wr * 100) + '% · 期望最终面积差 ' +
-                (n >= 0 ? '+' : '-') + Math.abs(n) + ' 格（' + rpName(replay.selfIdx) + '视角 · ' + basis + '）';
+            rpValue.textContent = '推演胜率 ' + fmtPct(sv.wr) + ' · 期望最终面积差 ' + fmtCells(sv.cells) +
+                ' 格（' + rpName(replay.selfIdx) + '视角 · ' + basis + '）';
         }
         if (lgWrSwatch) lgWrSwatch.style.borderTopColor = RP_COLORS[replay.selfIdx];
         rpActual.textContent = '本局实际：' + fmtMove(f && f.move);
@@ -3174,7 +3187,7 @@ self.onmessage = function(e) {
         c.globalAlpha = 1;
         c.strokeStyle = '#ffffff'; c.lineWidth = 2;
         c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
-        barMark(c, w, h, y, Math.round(sv.wr * 100) + '%', sv.low);
+        barMark(c, w, h, y, fmtPct(sv.wr), sv.low);
     }
 
     // 右条：期望最终面积差，发散量纲 —— 中线是 0 格，往上己方多、往下己方少，满条 ±RP_CELL_MAX 格
@@ -3193,8 +3206,8 @@ self.onmessage = function(e) {
         c.globalAlpha = 1;
         c.strokeStyle = '#ffffff'; c.lineWidth = 2;
         c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
-        const n = Math.round(cells);
-        barMark(c, w, h, y, (n >= 0 ? '+' : '-') + Math.abs(n) + '格', sv.low);
+        // 条上只写 "+12.3"（46px 宽放不下 "+12.3格"），单位由读数行与图例说明
+        barMark(c, w, h, y, fmtCells(cells), sv.low);
     }
 
     function drawBars() {
@@ -3255,6 +3268,8 @@ self.onmessage = function(e) {
     function drawReplayOverlay() {
         const f = replay.frames[replay.idx];
         if (!f) return;
+        // 面板里留着的可能是上一帧的首选行（新结果还在算）：文字可以留旧，棋盘不能跟着画旧线路
+        if (!suggestionsFresh()) return;
         const top = replay.sug && replay.sug.meta && replay.sug.meta.top;
         if (!top || !top.length) return;
         const i = Math.min(replay.pick, top.length - 1);
