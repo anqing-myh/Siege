@@ -335,24 +335,55 @@
             font-size: 15px;
             margin: 6px 0 2px 0;
             color: #fff;
+            /* 定高：读数最长那种写法（规则已判定 · 随机推演 300 局 + 长昵称）要三行 ⇒ 恒定三行，
+               翻到哪一手都不许把下面的按钮顶走 */
+            line-height: 1.3;
+            height: calc(3 * 1.3em);
+            overflow: hidden;
         }
-        #analysisPanel .rp-sub { font-size: 12px; opacity: 0.85; margin-bottom: 8px; }
-        #analysisPanel .rp-list { margin: 4px 0 0 0; }
+        #analysisPanel .rp-sub {
+            font-size: 12px;
+            opacity: 0.85;
+            margin-bottom: 8px;
+            line-height: 1.3;
+            height: calc(2 * 1.3em);
+            overflow: hidden;
+        }
+        #analysisPanel .rp-list {
+            margin: 4px 0 0 0;
+            /* 恒定"三选齐全"的高度。终局帧/规则判定帧只有一句话时不塌行，多出来的两行就是留白
+               （用户点名要的效果：上面这块不许随内容伸缩） */
+            height: calc(3 * (2 * 1.45em + 12px + 4px));
+            overflow-y: auto;
+        }
         #analysisPanel .rp-move {
             background: #3a332b;
             border-radius: 10px;
             padding: 6px 8px;
-            margin: 4px 0;
+            margin: 0 0 4px 0;
             line-height: 1.45;
             white-space: normal;
             word-break: break-word;
+            /* 一行着法固定占两行字高（实测三选正好两行；真超了就省略号收尾，不许撑高列表） */
+            height: calc(2 * 1.45em + 12px);
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
         #analysisPanel .rp-move.best { background: #52452f; }
         /* 前三选都能点：点谁就按谁画棋盘，所以选中项要一眼看出来 */
         #analysisPanel .rp-move.pick { cursor: pointer; border-left: 3px solid #6b5c42; }
         #analysisPanel .rp-move.pick:hover { background: #4a4033; }
         #analysisPanel .rp-move.sel { border-left-color: #ffcc00; background: #5a4a2e; }
-        #analysisPanel .rp-actual { color: #c7a77d; font-size: 12px; margin-top: 6px; }
+        #analysisPanel .rp-actual {
+            color: #c7a77d;
+            font-size: 12px;
+            margin-top: 6px;
+            line-height: 1.3;
+            height: calc(2 * 1.3em);
+            overflow: hidden;
+        }
         .rp-btn {
             background: #5a4a3a;
             border: none;
@@ -602,7 +633,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.2 2026-10-29  感谢游玩~
+        <br>版本信息：Version 3.1.3 2026-10-30  感谢游玩~
     </div>
 </div>
 <script>
@@ -2973,13 +3004,21 @@ self.onmessage = function(e) {
         }
     }
 
+    // 副行是定高的（翻手不许把下面的按钮顶走），而往这里写的诊断文字长度不定 ⇒ 由写入方收口：
+    // 超过预留两行就截断收尾，全文留给 title 悬停看（`engine/check_panel_height.js` 用最坏文案量出来的这个宽度）
+    const RP_SUB_MAX = 44;
+    const setSub = s => {
+        rpValueSub.title = s;
+        rpValueSub.textContent = s.length > RP_SUB_MAX ? s.slice(0, RP_SUB_MAX - 1) + '…' : s;
+    };
+
     function refreshAnalysis() {
         if (!replay.frames.length) return;
         const job = ++replay.analyzeJob;
         rpRetry.style.display = 'none';
         replay.values = new Array(replay.frames.length).fill(null);
         seedTerminalFrames();
-        rpValueSub.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载') + '（走法回顾不受影响）') : '整局判读中…';
+        setSub(nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载') + '（走法回顾不受影响）') : '整局判读中…');
         renderReplayPanel();
         drawBars();
         drawCurve();
@@ -2991,20 +3030,20 @@ self.onmessage = function(e) {
             if (msg.index >= 0 && msg.index < replay.values.length) replay.values[msg.index] = msg.value;
             got++;
             if (job !== replay.analyzeJob || !replay.active) return;
-            rpValueSub.textContent = '整局判读 ' + got + '/' + states.length + '…';
+            setSub('整局判读 ' + got + '/' + states.length + '…');
             renderReplayPanel();
             drawBars();
         };
         // 一帧一次 400 访问搜索，整局 30-60 帧要十几秒：先让用户看到已经判完的那些帧
         nnAsk('analyze', states, 180000, onPartial).then(() => {
             if (job !== replay.analyzeJob || !replay.active) return;
-            rpValueSub.textContent = '';
+            setSub('');
             renderReplayPanel();
             drawBars();
             drawCurve();
         }).catch(err => {
             if (job !== replay.analyzeJob || !replay.active) return;
-            rpValueSub.textContent = '整局判读失败：' + err.message;
+            setSub('整局判读失败：' + err.message);
             rpRetry.style.display = '';
             drawBars();
             drawCurve();
@@ -3077,7 +3116,8 @@ self.onmessage = function(e) {
             return;
         }
         if (!suggestionsFresh()) {
-            if (rpMoves.childNodes.length) rpSugHead.textContent = '通玄首选（本手重算中…）';
+            // 只留"真的算出来过"的行；上一帧若是句说明文字（终局/无数据），留着它再说「重算中」会自相矛盾
+            if (rpMoves.querySelector('.rp-move')) rpSugHead.textContent = '通玄首选（本手重算中…）';
             else {
                 rpSugHead.textContent = '通玄首选';
                 rpMoves.textContent = nnDisabled ? ('通玄不可用：' + (nnWhy || '未加载')) : '本手评估中…';
@@ -3091,6 +3131,7 @@ self.onmessage = function(e) {
             const d = document.createElement('div');
             d.className = 'rp-move';
             d.textContent = '模型没有回出这一手的搜索数据';
+            d.title = d.textContent;
             rpMoves.appendChild(d);
             return;
         }
@@ -3098,6 +3139,7 @@ self.onmessage = function(e) {
             const d = document.createElement('div');
             d.className = 'rp-move';
             d.textContent = RP_WHY[meta.why] || ('规则判定：' + meta.why);
+            d.title = d.textContent;
             rpMoves.appendChild(d);
             return;
         }
@@ -3151,6 +3193,8 @@ self.onmessage = function(e) {
         }
         if (lgWrSwatch) lgWrSwatch.style.borderTopColor = RP_COLORS[replay.selfIdx];
         rpActual.textContent = '本局实际：' + fmtMove(f && f.move);
+        // 这几块是定高的（翻手不跳），文案长度由写入方保证；title 只是给"读数+长视角名"这种临界情况留个兜底
+        [rpValue, rpSugHead, rpActual].forEach(el => { el.title = el.textContent || ''; });
         rpViewRed.classList.toggle('best', replay.selfIdx === 0);
         rpViewBlue.classList.toggle('best', replay.selfIdx === 1);
         renderSuggestions();
