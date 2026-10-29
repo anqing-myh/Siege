@@ -1686,7 +1686,7 @@ self.onmessage = function(e) {
     }
     function nnFailNow(reason) {
         const a = nnAbort; nnAbort = null;
-        if (a) a();
+        if (a) a(reason);
         else nnDegradeUI(reason);
     }
 
@@ -1806,11 +1806,11 @@ self.onmessage = function(e) {
                 worker.onerror = null;
                 nnAbort = null;
             };
-            nnAbort = function () {
+            nnAbort = function (reason) {
                 if (myId !== nnToken) return;
                 nnToken++;               // 作废这条线上可能的迟到结果
                 detach();
-                nnDegradeUI();
+                nnDegradeUI(reason);
                 onClassic();
             };
             worker.onmessage = function (e) {

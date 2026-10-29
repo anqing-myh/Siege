@@ -21,6 +21,15 @@ const REV = 'v1';
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
 const abs = (p) => new URL(p, BASE).href;
+const short = (u) => String(u).replace(/^https?:\/\/[^/]+/, '');
+async function fetchChecked(url) {
+    const r = await fetch(url, { cache: 'force-cache' });
+    if (!r.ok) throw new Error(short(url) + ' HTTP ' + r.status);
+    return r;
+}
+async function toBlobUrl(url, type) {
+    return URL.createObjectURL(new Blob([await (await fetchChecked(url)).arrayBuffer()], { type }));
+}
 const MODEL_URL = abs(`models/tongxuan_v1.onnx?rev=${REV}`);
 const DEPS = [abs(`ort/ort.wasm.min.js?rev=${REV}`), abs(`siege_engine.js?rev=${REV}`), abs(`nn_ai.js?rev=${REV}`)];
 
@@ -68,12 +77,15 @@ async function init() {
     const threads = isolated ? Math.max(1, Math.min(4, hw)) : 1;
     ort.env.wasm.proxy = false;
     ort.env.wasm.numThreads = threads;
-    ort.env.wasm.wasmPaths = abs('ort/');
+    // ORT 的后端模块是用 import() 取的（no-cors 请求），托管端开了 COEP 就会把它拦成 ERR_BLOCKED_BY_RESPONSE
+    // （siege.zeabur.app 实测），而 fetch 同一个 URL 是 200。所以自己取源码转 blob 再交给 ORT；
+    // wasm 同理直接喂字节，免得 Emscripten 拿到 blob 基地址后再按相对路径去找文件。
+    const mjs = await toBlobUrl(abs('ort/ort-wasm-simd-threaded.mjs'), 'text/javascript');
+    const wasm = await toBlobUrl(abs('ort/ort-wasm-simd-threaded.wasm'), 'application/wasm');
+    ort.env.wasm.wasmPaths = { mjs, wasm };
     ort.env.logLevel = 'error';
 
-    const resp = await fetch(MODEL_URL, { cache: 'force-cache' });
-    if (!resp.ok) throw new Error('模型下载失败 HTTP ' + resp.status);
-    const buf = await resp.arrayBuffer();
+    const buf = await (await fetchChecked(MODEL_URL)).arrayBuffer();
     if (buf.byteLength < 1e6) throw new Error('模型文件异常 ' + buf.byteLength);
 
     const t0 = Date.now();
