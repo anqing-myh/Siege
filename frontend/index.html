@@ -667,7 +667,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.11 2026-10-30  感谢游玩~
+        <br>版本信息：Version 3.1.12 2026-10-31  感谢游玩~
     </div>
 </div>
 <script>
@@ -1930,7 +1930,8 @@ self.onmessage = function(e) {
             return new Promise((res, rej) => {
                 const timer = setTimeout(() => {
                     nnJobs.delete(id);
-                    rej(new Error(kind === 'analyze' ? '整局评估超时' : '本手评估超时'));
+                    rej(new Error(kind === 'analyze' ? '整局评估超时'
+                        : kind === 'searchAnalyze' ? '整局搜索判读超时' : '本手评估超时'));
                 }, timeoutMs);
                 nnJobs.set(id, {
                     partial: onPartial,
@@ -1942,7 +1943,7 @@ self.onmessage = function(e) {
                 });
                 const pkt = { id };
                 pkt[kind] = true;
-                if (kind === 'analyze') pkt.states = payload; else pkt.state = payload;
+                if (kind === 'analyze' || kind === 'searchAnalyze') pkt.states = payload; else pkt.state = payload;
                 worker.postMessage(pkt);
             });
         });
@@ -1959,7 +1960,7 @@ self.onmessage = function(e) {
     function nnPersistentListener(e) {
         const m = e.data || {};
         if (m.type === 'pong') { nnAlive = true; return; }
-        if (m.type === 'analysis' || m.type === 'suggestion') { nnResolveJob(m); return; }
+        if (m.type === 'analysis' || m.type === 'suggestion' || m.type === 'searchAnalysis') { nnResolveJob(m); return; }
         if (m.type !== 'status') return;
         if (m.phase === 'loading') {
             nnBadge(NN_NAME + ' 加载中：ONNX 运行时 + 权重 约 19 MB（只需一次）…', 'tx-warn');
@@ -1975,7 +1976,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v10';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v12';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -3085,6 +3086,7 @@ self.onmessage = function(e) {
             renderReplayPanel();
             drawBars();
             drawCurve();
+            startSearchPass(states, job);   // 静态读数已齐：后台再跑搜索口径，逐帧替换
         }).catch(err => {
             if (job !== replay.analyzeJob || !replay.active) return;
             setSub('整局判读失败：' + err.message);
@@ -3092,6 +3094,23 @@ self.onmessage = function(e) {
             drawBars();
             drawCurve();
         });
+    }
+
+    // 第二遍判读：每帧一棵 400 访问的树，读数换成"搜索认为的期望"（访问加权 Q / 同分布加权面积前向）。
+    // 整局十几秒，纯后台、不挡翻页；哪帧算完哪帧就地替换形势条与折线。失败就静默留着静态读数。
+    function startSearchPass(states, job) {
+        if (nnDisabled) return;
+        nnAsk('searchAnalyze', states, 600000, (msg) => {
+            if (job !== replay.analyzeJob || !replay.active) return;
+            if (msg.index < 0 || msg.index >= replay.values.length || !msg.value) return;
+            replay.values[msg.index] = Object.assign({}, replay.values[msg.index], msg.value);
+            drawBars();
+            drawCurve();
+        }).then(() => {
+            if (job !== replay.analyzeJob || !replay.active) return;
+            drawBars();
+            drawCurve();
+        }).catch(() => {});
     }
 
     function requestSuggestion(state) {
@@ -3119,9 +3138,11 @@ self.onmessage = function(e) {
             replay.sug = msg;
             replay.sugFrame = k;
             replay.pick = 0;                      // 新的一手评估 = 重新从一选开始看
-            // 本手这一搜顺带出的网络读数，直接当第 k 帧的读数用（整局折线随后独立再算一遍）
+            // 本手这一搜顺带出的网络读数，直接当第 k 帧的读数用（整局折线随后独立再算一遍）。
+            // 但搜索遍（searched）已经替换过的帧不许被这里的静态读数盖回去——搜索口径更准
             const m = msg.meta;
-            if (m && (m.solved || Number.isFinite(m.pw) || Number.isFinite(m.ac)))
+            const cur = replay.values[k];
+            if (!(cur && cur.searched) && m && (m.solved || Number.isFinite(m.pw) || Number.isFinite(m.ac)))
                 // 合并而不是整块替换：整局判读先回来的那一帧带着 over/rc（终局真值），不能被这搜的预报值冲掉
                 replay.values[k] = Object.assign({}, replay.values[k],
                     { solved: m.solved || 0, pw: m.pw, ac: m.ac });
@@ -3241,11 +3262,11 @@ self.onmessage = function(e) {
         });
     }
 
-    // 首选标题后面的搜索口径：sims 上限 / 算法 / PUCT 常数 / 时间预算，都来自 worker 回包里的 cfg
+    // 首选标题后面的搜索口径：sims 上限 / 算法 / PUCT 常数，都来自 worker 回包里的 cfg
     function sugParams(meta) {
         const c = meta.cfg;
         if (!c) return '';
-        return ' · ' + c.simsMax + ' sims · PUCT-MCTS c=' + c.cPuct + ' · 预算' + (c.budgetMs / 1000).toFixed(1) + 's';
+        return ' · ' + c.simsMax + ' sims · PUCT-MCTS c=' + c.cPuct;
     }
 
     function renderReplayPanel() {

@@ -284,16 +284,17 @@
         return { moves: path, wallDir: E.WALL_DIRS[dirIdx] };
     }
 
-    // 复盘用：把根节点的访问分布导出成 top-K 候选（Q 取 -ch.W/ch.N 才是根行棋方视角）。
-    // 只按访问数降序、同访问保持 pool 原序 —— 与 chooseAction 选 best 的规则一致，所以 top[0] 就是 bestAction。
-    function topCandidates(root, pool, ev, topK) {
+    // 复盘用：把根节点的访问分布导出（Q 取 -ch.W/ch.N 才是根行棋方视角）。
+    // 只按访问数降序、同访问保持 pool 原序 —— 与 chooseAction 选 best 的规则一致，所以全表第 0 行就是 bestAction。
+    // 返回**全表**不截断：top-K 与整局搜索判读的访问加权 V_root 都用它，截断会把权重算漏。
+    function topCandidates(root, pool, ev) {
         const arr = [];
         for (const a of pool) {
             const ch = root.kids.get(a);
             arr.push({ a, n: ch ? ch.N : 0, q: ch && ch.N ? -ch.W / ch.N : 0, p: ev.probs[a] });
         }
         arr.sort((x, y) => y.n - x.n);
-        return arr.slice(0, topK);
+        return arr;
     }
 
     /*
@@ -406,8 +407,11 @@
         r.meta = { sims, ms: Date.now() - t0, bestAction: best, excluded: legal.length - safe.length,
                    tn: cnt.tn, tw: cnt.tw, td: cnt.td };
         const topK = opts.topK || 0;
-        if (topK > 0) {
-            r.meta.top = topCandidates(root, pool, ev, topK);
+        if (topK > 0 || opts.rootDist) {
+            const full = topCandidates(root, pool, ev);
+            if (topK > 0) r.meta.top = full.slice(0, topK);
+            // rootDist = 有访问的根候选全表：整局搜索判读拿它算访问加权的 V_root
+            if (opts.rootDist) r.meta.rootDist = full.filter(x => x.n > 0);
             r.meta.rootV = ev.v;
         }
         return r;

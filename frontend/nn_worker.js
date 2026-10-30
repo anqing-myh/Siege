@@ -28,7 +28,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v10';
+const REV = 'v12';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -237,6 +237,64 @@ async function runAnalyze(states, id) {
     send({ type: 'analysis', id, done: true });
 }
 
+/*
+ * 整局搜索判读（第二遍）：静态判读先秒出整条线，这一遍在后台逐帧跑一棵 400 访问的树，
+ * 把读数替换成"搜索认为的期望"——
+ *   胜率 = 根节点访问加权的 Q：V_root = Σ N(s,a)·Q(s,a) / Σ N(s,a)，再 (V+1)/2；
+ *   面积 = 同一访问分布下，每个根候选走一步后面积头前向的加权和（面积头只出前向、不建自己的树）。
+ * 只服务复盘折线/形势条，不参与对弈；终局帧跳过（真值已经在 values 里）。
+ */
+async function areaAfter(state, p, action) {
+    try {
+        const s = E.cloneState(state);
+        E.applyAction(s, p, action);
+        // 必须在 child 自己的行棋方视角下评：训练编码里"视角方=行棋方"（无回合平面），
+        // 从根方视角评等于白送一个 tempo、读数系统性偏正。零和恒等式取负换回根方视角。
+        const av = await areaNet.evaluate(s, s.currentPlayer);
+        return Number.isFinite(av.v) ? -Math.min(1, Math.max(-1, av.v)) * AREA_CELLS : null;
+    } catch (err) { return null; }
+}
+
+async function searchFrame(state) {
+    const p = state.currentPlayer;
+    const r = await NN.chooseAction(state, p, {
+        net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, rootDist: true
+    });
+    if (!r || !r.meta) return null;
+    const m = r.meta;
+    if (m.solved) {
+        // 规则判定帧：胜率是判定值不是估计；面积给"被迫那一手走完后"的前向
+        return { pw: m.solved > 0 ? 1 : 0,
+                 ac: areaNet && m.bestAction != null ? await areaAfter(state, p, m.bestAction) : null,
+                 solved: m.solved, searched: true };
+    }
+    const dist = m.rootDist || [];
+    const tot = dist.reduce((s, x) => s + x.n, 0);
+    if (!tot) return null;
+    let vWin = 0, vArea = 0, hasArea = !!areaNet;
+    for (const x of dist) {
+        const w = x.n / tot;
+        vWin += w * x.q;
+        if (hasArea) {
+            const a = await areaAfter(state, p, x.a);
+            if (a === null) hasArea = false; else vArea += w * a;
+        }
+    }
+    return { pw: (vWin + 1) / 2, ac: hasArea ? vArea : null, searched: true };
+}
+
+async function runSearchAnalyze(states, id) {
+    for (let i = 0; i < states.length; i++) {
+        let value = null;
+        try {
+            if (!E.terminalInfo(states[i])) value = await searchFrame(states[i]);
+        } catch (err) { value = null; }
+        send({ type: 'searchAnalysis', id, partial: true, index: i, value });
+        await new Promise(r => setTimeout(r, 0));
+    }
+    send({ type: 'searchAnalysis', id, done: true });
+}
+
 async function runSuggest(state, id) {
     const player = state.currentPlayer;
     const r = await NN.chooseAction(state, player, {
@@ -251,7 +309,7 @@ async function runSuggest(state, id) {
 }
 
 self.onmessage = function (e) {
-    const { state, id, ping, warmup, analyze, suggest, states } = e.data || {};
+    const { state, id, ping, warmup, analyze, searchAnalyze, suggest, states } = e.data || {};
     if (ping) {
         send({ type: 'pong', script: 'nn_worker.js', deps: DEPS.length, loadError });
         return;
@@ -260,12 +318,13 @@ self.onmessage = function (e) {
         send({ type: 'status', phase: 'failed', message: loadError });
         if (state) send({ type: 'error', id, message: loadError });
         if (analyze) send({ type: 'analysis', id, error: loadError });
+        if (searchAnalyze) send({ type: 'searchAnalysis', id, error: loadError });
         if (suggest) send({ type: 'suggestion', id, error: loadError });
         return;
     }
     if (initFailed) {
         const msg = NN_NAME + ' 不可用（已初始化失败）';
-        send({ type: analyze ? 'analysis' : suggest ? 'suggestion' : 'error', id, message: msg, error: msg });
+        send({ type: analyze ? 'analysis' : searchAnalyze ? 'searchAnalysis' : suggest ? 'suggestion' : 'error', id, message: msg, error: msg });
         return;
     }
     if (!initPromise) {
@@ -277,12 +336,13 @@ self.onmessage = function (e) {
         });
     }
     const job = analyze ? () => runAnalyze(states, id)
+              : searchAnalyze ? () => runSearchAnalyze(states, id)
               : suggest ? () => runSuggest(state, id)
               : (warmup || !state) ? null
               : () => think(state, id);
     if (!job) return;
     initPromise.then(job).catch(err => {
         const message = (err && err.message) || String(err);
-        send({ type: analyze ? 'analysis' : suggest ? 'suggestion' : 'error', id, message, error: message });
+        send({ type: analyze ? 'analysis' : searchAnalyze ? 'searchAnalysis' : suggest ? 'suggestion' : 'error', id, message, error: message });
     });
 };
