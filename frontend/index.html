@@ -61,10 +61,34 @@
         }
         .mode-btn:hover { transform: scale(1.02); }
         .board-wrapper {
+            /* --cell：棋盘边长（一处定义，媒体查询里改这一个变量，坐标标号的格子跟着一起缩） */
+            --cell: 420px;
+            --gutter: 16px;
             background: #b4956a;
             padding: 18px;
             border-radius: 18px;
             box-shadow: inset 0 0 10px #4a3c2a, 0 10px 20px rgba(0,0,0,0.5);
+            display: grid;
+            grid-template-columns: var(--gutter) var(--cell);
+            grid-template-rows: var(--gutter) var(--cell);
+        }
+        /* 行列号：首选着法报的是 (row,col)，所以在左边标 row、上边标 col，都是 0 起 */
+        .coord { display: flex; }
+        .coord-top { grid-area: 1 / 2; }
+        .coord-left { grid-area: 2 / 1; flex-direction: column; }
+        .coord span {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            color: #5a4028;
+        }
+        #boardCanvas {
+            grid-area: 2 / 2;
+            width: var(--cell);
+            height: var(--cell);
         }
         canvas {
             display: block;
@@ -79,6 +103,7 @@
         .info-panel {
             margin-top: 20px;
             width: 100%;
+            max-width: 560px;
             display: flex;
             flex-direction: column;
             gap: 8px;
@@ -91,6 +116,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: nowrap;
             gap: 10px;
         }
         .info-bottom-row {
@@ -127,16 +153,19 @@
             justify-content: center;
             overflow: hidden;
         }
-        .btn-group { display: flex; gap: 8px; }
+        .btn-group { display: flex; gap: 8px; flex-shrink: 0; }
         .info-left {
             display: flex;
             gap: 30px;
             align-items: center;
+            flex-wrap: nowrap;
+            flex-shrink: 0;
         }
         .info-item {
             display: flex;
             align-items: center;
             gap: 8px;
+            white-space: nowrap;
         }
         .player-badge {
             width: 20px;
@@ -173,6 +202,7 @@
             cursor: pointer;
             transition: 0.2s;
             font-weight: 500;
+            white-space: nowrap;
         }
         .btn-restart:hover { background: #9a8a70; }
         .win-message {
@@ -267,7 +297,7 @@
             justify-content: center;
             gap: 14px;
         }
-        /* 两条形势条：左=推演胜率，右=期望最终面积差。都用 canvas 是为了和棋盘同一套像素绘制 */
+        /* 两条形势条：左=模型胜率，右=期望最终面积差。都用 canvas 是为了和棋盘同一套像素绘制 */
         #wrBar, #areaBar {
             display: none;
             width: 46px;
@@ -335,7 +365,7 @@
             font-size: 15px;
             margin: 6px 0 2px 0;
             color: #fff;
-            /* 定高：读数最长那种写法（规则已判定 · 随机推演 300 局 + 长昵称）要三行 ⇒ 恒定三行，
+            /* 定高：读数最长那种写法（xuantian 02 估值 + 长昵称 + 两个读数都在）要三行 ⇒ 恒定三行，
                翻到哪一手都不许把下面的按钮顶走 */
             line-height: 1.3;
             height: calc(3 * 1.3em);
@@ -447,10 +477,12 @@
             }
             .board-wrapper {
                 padding: 10px;
+                --cell: min(92vw, 330px);
+                --gutter: 13px;
             }
             #boardRow { flex-wrap: wrap; gap: 8px; }
             #boardRow.in-replay { gap: 6px; }
-            #boardRow.in-replay .board-wrapper { padding: 6px; }
+            #boardRow.in-replay .board-wrapper { padding: 6px; --cell: min(72vw, 300px); --gutter: 11px; }
             /* 两条形势条挤进来的那一行放不下原来的 92vw：复盘时棋盘让出宽度，窄屏才不横向溢出 */
             #boardRow.in-replay canvas { width: min(72vw, 300px); height: min(72vw, 300px); }
             #wrBar, #areaBar { width: 26px; height: min(92vw, 330px); }
@@ -460,6 +492,8 @@
                 width: min(92vw, 330px);
                 height: min(92vw, 330px);
             }
+            #wrBar, #areaBar, #valueCurve { width: revert-layer; }
+            .coord span { font-size: 10px; }
             .info-panel {
                 padding: 10px 12px;
                 border-radius: 22px;
@@ -523,8 +557,10 @@
         <button class="mode-btn" data-mode="p2p">🌐 联机对战</button>
     </div>
     <div id="boardRow">
-        <canvas id="wrBar" width="46" height="420" title="推演胜率（己方视角，50% 均势）" style="display:none"></canvas>
+        <canvas id="wrBar" width="46" height="420" title="胜率（模型估值，己方视角，50% 均势）" style="display:none"></canvas>
         <div class="board-wrapper">
+            <div class="coord coord-top" id="coordTop" aria-hidden="true"></div>
+            <div class="coord coord-left" id="coordLeft" aria-hidden="true"></div>
             <canvas id="boardCanvas" width="420" height="420"></canvas>
         </div>
         <canvas id="areaBar" width="46" height="420" title="期望最终面积差（己方视角，单位：格，中线 0）" style="display:none"></canvas>
@@ -533,13 +569,11 @@
                 <span>复盘分析</span>
                 <span id="rpFrameNo">0 / 0</span>
             </div>
-            <div class="rp-val" id="rpValue">推演胜率 —</div>
-            <div class="rp-sub" id="rpValueSub">等待评估…</div>
             <div class="rp-nav" id="rpViewRow" style="display:none">
                 <button class="rp-btn" id="rpViewRed">视角：红方</button>
                 <button class="rp-btn" id="rpViewBlue">蓝方</button>
             </div>
-            <div class="rp-sub" id="rpSugHead">xuantian 01 首选</div>
+            <div class="rp-sub" id="rpSugHead">xuantian 02 首选</div>
             <div class="rp-list" id="rpMoves">—</div>
             <div class="rp-actual" id="rpActual"></div>
             <div class="rp-nav">
@@ -602,12 +636,12 @@
     </div>
     <div id="aiControlBar">
         <div id="aiProgressBar"><div id="aiProgressFill"></div></div>
+        <span id="tongxuanInfo" class="tx-info" style="display:none"></span>
         <div id="difficultyRow">
             <span>难度：</span>
             <button class="diff-btn active" data-diff="expert">专家</button>
             <button class="diff-btn" data-diff="master">大师</button>
             <button class="diff-btn" data-diff="tongxuan">通玄</button>
-            <span id="tongxuanInfo" class="tx-info" style="display:none"></span>
         </div>
     </div>
     <div id="bottomBar">
@@ -633,7 +667,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.4 2026-10-30  感谢游玩~
+        <br>版本信息：Version 3.1.11 2026-10-30  感谢游玩~
     </div>
 </div>
 <script>
@@ -1823,8 +1857,9 @@ self.onmessage = function(e) {
     // ---- 通玄（NN）Web Worker ----
     // 「通玄」是**难度名**（难度按钮上那一个字），模型对外一律叫 NN_NAME（当前 = 第 1 代，内部产物 gen007A3）。
     // 换代时改这里 + nn_worker.js 里的同名常量（两处，Worker 是独立作用域拿不到页面的）；
-    // 权重文件名不参与（tongxuan_v1.onnx 是历史名，保留；下一个晋升进来的模型才叫 xuantian_02.onnx）。
-    const NN_NAME = 'xuantian 01';
+    // 权重文件名跟着代走：xuantian 01 = tongxuan_v1.onnx（gen007A3，历史名保留在仓库里），
+    // xuantian 02 = xuantian_02.onnx（gen008B1）。以 xuantian 命名的就是每一代选出来的冠军模型。
+    const NN_NAME = 'xuantian 02';
     // 失败必须"可见 + 快"：Worker 静默死掉 = 进度条不涨 + AI 永不落子，是最坏的体验。
     // 因此：创建即探测（ping 4 秒无回音 = 脚本没跑起来），加载状态写进页面上的 #tongxuanInfo。
     let nnWorker = null;
@@ -1843,14 +1878,14 @@ self.onmessage = function(e) {
     function nnBadge(text, cls, full) {
         const el = document.getElementById('tongxuanInfo');
         if (!el) return;
+        if (aiDifficulty !== 'tongxuan') { el.style.display = 'none'; return; }
         el.style.display = '';
         el.textContent = text;
         el.title = full || text;
         el.className = 'tx-info ' + (cls || '');
     }
     function nnTierText(i) {
-        return `${NN_NAME}·${i.tier} ${i.simsMax}访/手 ≤${(i.budgetMs / 1000).toFixed(1)}s ` +
-               `${i.threads}线程${i.isolated ? '' : '(无跨源隔离,单线程)'} ${(i.msPerSim)}ms/访`;
+        return `${NN_NAME} ${i.simsMax} sims/手 ≤${(i.budgetMs / 1000).toFixed(1)}s`;
     }
     function nnStopRamp() { if (nnRamp) { clearInterval(nnRamp); nnRamp = null; } }
     function nnStartRamp() {
@@ -1940,7 +1975,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v6';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v10';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -2056,7 +2091,7 @@ self.onmessage = function(e) {
                     console.log('[xuantian] 本手', msg.meta);
                     if (nnInfo) {
                         const why = msg.meta.why ? ' · ' + msg.meta.why : '';
-                        nnBadge(`${NN_NAME}·${nnInfo.tier} 上一手 ${msg.meta.sims}访问/${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
+                        nnBadge(`${NN_NAME} 上一手 ${msg.meta.sims} sims / ${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
                     }
                 }
                 onResult({ data: { type: 'result', value: msg.value } });
@@ -2105,6 +2140,16 @@ self.onmessage = function(e) {
     // ---- DOM ----
     const canvas = document.getElementById('boardCanvas');
     const ctx = canvas.getContext('2d');
+    // 行列号 0..6：首选着法报的是 (row,col)，左边一列是 row、上边一行是 col，跟棋盘像素同向
+    for (const id of ['coordTop', 'coordLeft']) {
+        const box = document.getElementById(id);
+        if (!box) continue;
+        for (let i = 0; i < BOARD_SIZE; i++) {
+            const s = document.createElement('span');
+            s.textContent = i;
+            box.appendChild(s);
+        }
+    }
     const stepDisplay = document.getElementById('stepDisplay');
     const statusMessage = document.getElementById('statusMessage');
     const restartBtn = document.getElementById('restartBtn');
@@ -2325,6 +2370,7 @@ self.onmessage = function(e) {
 
     // ---- UI ----
     function updateUI() {
+        updateDifficultyLock();          // 落子后把难度按钮藏掉（只动 display，不碰进度条）
         stepDisplay.textContent = game.stepRemaining;
         turnCounter.textContent = '回合 ' + game.turnCount;
         const p = game.currentPlayer;
@@ -2743,35 +2789,32 @@ self.onmessage = function(e) {
     /*
      * frames[k] = 第 k 个"轮到谁"的局面，move = 从这一局面上实际走的那一手（终局帧为 null）。
      * 于是看第 k 帧时：模型首选 = 从 frames[k] 搜出来的前三手（点哪一行就按哪一行画盘），
-     * values[k] 也是 frames[k] 的判读结果（{solved,rn,rw,rc,over,tn,tw,td}）。
-     * 两个读数同源：同一批随机推演（rw = 胜 1 / 和 0.5 / 负 0 的均值 ⇒ 胜率，rc = 终局面积差的均值
-     * ⇒ 期望最终面积差），左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
-     * 不用网络的 value 反解面积差 —— 训练目标 z = sign(d)·(0.7+0.3·|d|/49) 里那个 0.7 是胜负打底，
-     * 全盘实测 |v|≤0.59 全落在死区内，反解出来每帧都是 0 格（NOTES §39）；
+     * values[k] 也是 frames[k] 的判读结果（{solved,pw,ac,rc,over,tn,tw,td}）。
+     * 两条读数都来自网络的 value 头（本帧行棋方视角）：pw = 冠军网络的胜率，
+     * ac = 面积分析网络的期望最终面积差（格）。左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
+     * 为什么现在敢用网络头：xuantian 02 的 value 目标是 win 口径（±1/0），MSE 的最优解就是 2·p_胜−1
+     * ⇒ (v+1)/2 本身就是校准概率，不再是上一代 mix 口径那种"0.7 打底、全盘 |v|≤0.59 全在死区、
+     * 反解出来每帧都是 0 格"的死数字（§39/§42 的老账，随 §52 定稿 win 一并作废）；面积差本来是
+     * 分析网络（diff 口径 d/49）的本职，不拿对弈网络的 value 去硬换算。
      * 也不用搜索树里的终局样本 —— 400 访问在中盘只走到 0–32 个终局、还全挤在最佳线路上，
      * 一报就是 0% 或 100%（NOTES §42 实测）。要"模型觉得这手好不好"看首选行的 Q 与访问。
      */
     const RP_DIRS = ['top', 'right', 'bottom', 'left'];   // 顺序必须与 siege_engine 的 WALL_DIRS 一致
     const RP_WALL_ZH = { top: '上', right: '右', bottom: '下', left: '左' };
     const RP_COLORS = ['#d13f3f', '#3a6ea5'];
-    /* 胜率的三道保险（缺一会出现"开局莫名其妙 100%"）：
-     *  · 收缩：先掺 RP_PRIOR 个"平手"样本，样本极少时也够不到 100%，样本一多就几乎不受影响；
-     *  · 置信：终局样本少于 RP_MIN_N 算不可信（条体半透明 + ?）—— 比旧口径拿 !sep 当置信是真依据；
-     *  · 无样本：一次终局都没推到就什么都不画、读数写"未定"，绝不把 0/0 当成 0%（那是"必败"）。 */
-    const RP_PRIOR = 10;
-    const RP_MIN_N = 20;
     // 面积差形势条的量程：7×7 一共 49 格，一方最多全占、另一方原地 0 格 ⇒ 理论 ±48，满条即 ±48
     const RP_CELL_MAX = 48;
-    // 读数留一位小数（300 局推演的标准误约 ±3pp，第二位小数只是噪声）；-0.04 这类 tiny 负数统一显示成 +0.0
+    // 读数留一位小数（网络单帧估值的可用精度就到格/百分点这一档，第二位小数只是噪声）；-0.04 这类 tiny 负数统一显示成 +0.0
     const fmtPct = wr => (wr * 100).toFixed(1) + '%';
     const fmtCells = v => (v < -0.05 ? '-' : '+') + Math.abs(v).toFixed(1);
-    const RP_WHY = {
-        'immediate-win': '有直接制胜的着法，规则判定直接采纳（没跑搜索，所以没有对比数据）',
-        'only-safe': '只有这一手不送杀，规则判定直接采纳（没跑搜索）',
-        'lost-save-area': '怎么都输，挑保住地盘最大的那一手（没跑搜索）',
-        'pathfix': '搜索路径重建失败，走了兜底着法'
+    // 规则判定帧的括号说明：这一手是硬规则定的，不是搜索权衡出来的，但着法本身照样给出行与棋盘高亮
+    const RP_RULED = {
+        'immediate-win': '必胜，选择面积最大的一手',
+        'only-safe': '只有这一手不送杀',
+        'lost-save-area': '必败，选择面积最大的一手',
+        'pathfix': '搜索线路重建失败，取候选第一手'
     };
-    const replay = { active: false, frames: [], values: [], idx: 0, saved: null, selfIdx: 0, sug: null, sugFrame: -1, pick: 0, seq: 0, analyzeJob: 0 };
+    const replay = { active: false, frames: [], values: [], sugs: [], idx: 0, saved: null, selfIdx: 0, sug: null, sugFrame: -1, pick: 0, seq: 0, analyzeJob: 0 };
 
     const wrBarEl = document.getElementById('wrBar');
     const areaBarEl = document.getElementById('areaBar');
@@ -2780,8 +2823,6 @@ self.onmessage = function(e) {
     const rpCurve = document.getElementById('valueCurve');
     const lgWrSwatch = document.getElementById('lgWrSwatch');
     const rpFrameNo = document.getElementById('rpFrameNo');
-    const rpValue = document.getElementById('rpValue');
-    const rpValueSub = document.getElementById('rpValueSub');
     const rpViewRow = document.getElementById('rpViewRow');
     const rpSugHead = document.getElementById('rpSugHead');
     const rpMoves = document.getElementById('rpMoves');
@@ -2870,23 +2911,28 @@ self.onmessage = function(e) {
         return (mv.to.row * BOARD_SIZE + mv.to.col) * 4 + RP_DIRS.indexOf(mv.wall);
     }
 
-    // 帧存的是"本帧行棋方"的推演结果，翻成己方视角：胜率镜像 1-wr，面积差镜像取相反数。
+    // 帧存的是"本帧行棋方"的网络读数，翻成己方视角：胜率镜像 1-wr，面积差镜像取相反数。
+    // 两条各自独立：面积分析头没加载成功时右条空着（ac=null），不影响左条照常显示胜率。
     function selfView(k) {
         const a = replay.values[k], f = replay.frames[k];
         if (!a || !f) return null;
-        let wr, cells, n, certain;
-        if (a.over) {                       // 这帧就是终局：胜负与面积差都写在局面里，不是估计
+        let wr = null, cells = null, certain = false, over = false;
+        if (a.over) {                         // 这帧就是终局：胜负与面积差都写在局面里，不是估计
             wr = a.solved > 0 ? 1 : (a.solved < 0 ? 0 : 0.5);
-            cells = a.rc || 0; n = 0; certain = true;
-        } else if (a.solved) {              // 规则已判定（有必胜手 / 怎么都输），胜率不收缩
-            wr = a.solved > 0 ? 1 : 0;
-            cells = a.rc || 0; n = 0; certain = true;
-        } else if (a.rn) {
-            wr = (a.rw + RP_PRIOR / 2) / (a.rn + RP_PRIOR);
-            cells = a.rc || 0; n = a.rn; certain = false;
-        } else return null;                                                     // 一个终局都没推到 —— 没依据就不编数
-        if (f.state.currentPlayer !== replay.selfIdx) { wr = 1 - wr; cells = -cells; }
-        return { wr, cells, n, certain, low: !certain && n < RP_MIN_N };
+            cells = a.rc || 0; certain = true; over = true;
+        } else if (a.solved) {                // 规则已判定（有必胜手 / 怎么都输），胜率是判定值；面积差仍是预报
+            wr = a.solved > 0 ? 1 : 0; certain = true;
+            if (Number.isFinite(a.ac)) cells = a.ac;
+        } else {
+            if (Number.isFinite(a.pw)) wr = a.pw;
+            if (Number.isFinite(a.ac)) cells = a.ac;
+            if (wr === null && cells === null) return null;   // 网络没给读数 —— 没依据就不编数
+        }
+        if (f.state.currentPlayer !== replay.selfIdx) {
+            if (wr !== null) wr = 1 - wr;
+            if (cells !== null) cells = -cells;
+        }
+        return { wr, cells, certain, over };
     }
 
     function applyReplayFrame(k) {
@@ -2944,6 +2990,7 @@ self.onmessage = function(e) {
         };
         replay.active = true;
         replay.values = new Array(replay.frames.length).fill(null);
+        replay.sugs = new Array(replay.frames.length).fill(null);   // 方案 A：前三选按帧缓存，翻回旧帧不再重算
         replay.selfIdx = (game.mode === 'p2p' && (wsPlayerIndex === 0 || wsPlayerIndex === 1)) ? wsPlayerIndex : 0;
         if (wrBarEl) wrBarEl.style.display = 'block';
         if (areaBarEl) areaBarEl.style.display = 'block';
@@ -3003,17 +3050,11 @@ self.onmessage = function(e) {
             if (!st.gameOver) continue;
             const w = st.winner;
             const solved = (w === 0 || w === 1) ? (w === st.currentPlayer ? 1 : -1) : 0;
-            replay.values[k] = { solved, over: true, rn: 0, rw: 0, rc: rpAreaDiff(st), tn: 0, tw: 0, td: 0 };
+            replay.values[k] = { solved, over: true, rc: rpAreaDiff(st) };
         }
     }
 
-    // 副行是定高的（翻手不许把下面的按钮顶走），而往这里写的诊断文字长度不定 ⇒ 由写入方收口：
-    // 超过预留两行就截断收尾，全文留给 title 悬停看（`engine/check_panel_height.js` 用最坏文案量出来的这个宽度）
-    const RP_SUB_MAX = 44;
-    const setSub = s => {
-        rpValueSub.title = s;
-        rpValueSub.textContent = s.length > RP_SUB_MAX ? s.slice(0, RP_SUB_MAX - 1) + '…' : s;
-    };
+    const setSub = () => {};   // rpValueSub 已删（3.1.8），保留空函数免得调用方报错
 
     function refreshAnalysis() {
         if (!replay.frames.length) return;
@@ -3054,6 +3095,7 @@ self.onmessage = function(e) {
     }
 
     function requestSuggestion(state) {
+        const k = replay.idx;                       // 方案 A：按帧号缓存，翻回旧帧直接取，不再重算
         const seq = replay.seq;
         if (nnDisabled) {
             replay.sug = null;
@@ -3061,15 +3103,28 @@ self.onmessage = function(e) {
             rpSugHead.textContent = NN_NAME + ' 首选';
             return;
         }
+        if (replay.sugs[k]) {                       // 缓存命中：同一帧同一模型，结果确定，直接用
+            replay.sug = replay.sugs[k];
+            replay.sugFrame = k;
+            replay.pick = 0;
+            renderReplayPanel();
+            drawBoard();
+            drawBars();
+            return;
+        }
         // 不写"本手评估中…"清空旧行：上一帧的结果留着，新结果算好后整块替换（避免闪空白 + 高度跳动）
         nnAsk('suggest', state, 20000).then(msg => {
-            if (seq !== replay.seq) return;
+            replay.sugs[k] = msg;                   // 无论用户是否已翻走，都存进缓存（翻回来时秒出）
+            if (seq !== replay.seq) return;         // 但只有还停在这一帧时才刷新画面
             replay.sug = msg;
-            replay.sugFrame = replay.idx;
+            replay.sugFrame = k;
             replay.pick = 0;                      // 新的一手评估 = 重新从一选开始看
-            // 本手这一搜顺带做了 300 局推演，直接当第 idx 帧的读数用（整局折线随后独立再推一遍）
+            // 本手这一搜顺带出的网络读数，直接当第 k 帧的读数用（整局折线随后独立再算一遍）
             const m = msg.meta;
-            if (m && (m.solved || m.rn)) replay.values[replay.idx] = { solved: m.solved || 0, rn: m.rn || 0, rw: m.rw || 0, rc: m.rc || 0 };
+            if (m && (m.solved || Number.isFinite(m.pw) || Number.isFinite(m.ac)))
+                // 合并而不是整块替换：整局判读先回来的那一帧带着 over/rc（终局真值），不能被这搜的预报值冲掉
+                replay.values[k] = Object.assign({}, replay.values[k],
+                    { solved: m.solved || 0, pw: m.pw, ac: m.ac });
             renderReplayPanel();      // 内含 renderSuggestions + drawCurve
             drawBoard();
             drawBars();
@@ -3119,9 +3174,9 @@ self.onmessage = function(e) {
             return;
         }
         if (!suggestionsFresh()) {
-            // 只留"真的算出来过"的行；上一帧若是句说明文字（终局/无数据），留着它再说「重算中」会自相矛盾
-            if (rpMoves.querySelector('.rp-move')) rpSugHead.textContent = NN_NAME + ' 首选（本手重算中…）';
-            else {
+            // 只留"真的算出来过"的行；上一帧若是句说明文字（终局/无数据），留着它再说「重算中」会自相矛盾。
+            // 行还在时标题也不动：行和标题是同一帧配出来的，单独清标题会让参数闪掉
+            if (!rpMoves.querySelector('.rp-move')) {
                 rpSugHead.textContent = NN_NAME + ' 首选';
                 rpMoves.textContent = nnDisabled ? (NN_NAME + ' 不可用：' + (nnWhy || '未加载')) : '本手评估中…';
             }
@@ -3140,18 +3195,22 @@ self.onmessage = function(e) {
             rpMoves.appendChild(d);
             return;
         }
+        if (!meta.top && meta.bestAction != null) {
+            // 规则判定帧（一步杀 / 怎么都输 / 仅此一手）：没有访问分布可列，但这一手是确定的
+            // ⇒ 合成一行进同一个列表，文本与棋盘高亮都走同一条路，不让用户看不到"模型要下哪"
+            meta.top = [{ a: meta.bestAction, n: null, q: null, p: null, ruled: meta.why || 'ruled' }];
+        }
         if (!meta.top) {
-            // 规则直接判定的那一手（一步制胜/只有一手不送杀/必输救面积/兜底）压根没跑搜索，
-            // 没有访问数可报 —— 标题要说清"这不是在算，是规则定的"
-            rpSugHead.textContent = NN_NAME + ' 首选（规则判定 · 没跑搜索）';
+            rpSugHead.textContent = NN_NAME + ' 首选';
             const d = document.createElement('div');
             d.className = 'rp-move';
-            d.textContent = RP_WHY[meta.why] || ('规则判定：' + meta.why);
+            d.textContent = '模型没有回出着法数据';
             d.title = d.textContent;
             rpMoves.appendChild(d);
             return;
         }
-        rpSugHead.textContent = NN_NAME + ' 首选（' + meta.sims + ' 访问 / ' + meta.ms + 'ms）· 点一行看它怎么走';
+        rpSugHead.textContent = NN_NAME + ' 首选' +
+            (meta.top[0].ruled ? ' · 规则判定' : sugParams(meta));
         const f = replay.frames[replay.idx];
         const actualId = f && f.move ? moveActionId(f.move) : -1;
         const MARKS = '①②③④⑤';
@@ -3166,9 +3225,11 @@ self.onmessage = function(e) {
             d.title = '点这一行 = 棋盘改成显示这个选择';
             d.textContent = MARKS[i] + ' →(' + r + ',' + c + ') ' + (steps === null ? '?' : steps) + '步' +
                 ' · 墙' + RP_WALL_ZH[dir] +
-                ' · 访问' + t.n +
-                ' · Q' + (t.q >= 0 ? '+' : '') + t.q.toFixed(2) +
-                ' · 先验' + t.p.toFixed(2) +
+                (t.ruled
+                    ? '（' + (RP_RULED[t.ruled] || '规则判定') + '）'
+                    : ' · ' + t.n + ' sims' +
+                      ' · 预测价值' + (t.q >= 0 ? '+' : '') + t.q.toFixed(2) +
+                      ' · 先验' + t.p.toFixed(2)) +
                 (i === replay.pick ? ' ◀棋盘显示' : '') +
                 (t.a === actualId ? ' ✓本局实际' : '');
             d.addEventListener('click', () => {
@@ -3180,6 +3241,13 @@ self.onmessage = function(e) {
         });
     }
 
+    // 首选标题后面的搜索口径：sims 上限 / 算法 / PUCT 常数 / 时间预算，都来自 worker 回包里的 cfg
+    function sugParams(meta) {
+        const c = meta.cfg;
+        if (!c) return '';
+        return ' · ' + c.simsMax + ' sims · PUCT-MCTS c=' + c.cPuct + ' · 预算' + (c.budgetMs / 1000).toFixed(1) + 's';
+    }
+
     function renderReplayPanel() {
         if (!rpPanel || !replay.active) return;
         const n = replay.frames.length, k = replay.idx;
@@ -3187,22 +3255,9 @@ self.onmessage = function(e) {
         rpFrameNo.textContent = '第 ' + (k + 1) + ' / ' + n + ' 手';
         rpPrev.disabled = k <= 0;
         rpNext.disabled = k >= n - 1;
-        const sv = selfView(k);
-        if (!sv) {
-            rpValue.textContent = '推演胜率 —（' + rpName(replay.selfIdx) + '视角）';
-            if (f && f.state.gameOver) rpValue.textContent = '本手已终局';
-        } else {
-            // 依据要分开写：规则判定的那一帧胜率是判定，但面积差仍然是那 300 局随机推演的均值
-            const basis = sv.certain
-                ? (sv.n ? '规则已判定 · 随机推演 ' + sv.n + ' 局' : '规则已判定')
-                : '随机推演 ' + sv.n + ' 局' + (sv.low ? '，偏少' : '');
-            rpValue.textContent = '推演胜率 ' + fmtPct(sv.wr) + ' · 期望最终面积差 ' + fmtCells(sv.cells) +
-                ' 格（' + rpName(replay.selfIdx) + '视角 · ' + basis + '）';
-        }
         if (lgWrSwatch) lgWrSwatch.style.borderTopColor = RP_COLORS[replay.selfIdx];
         rpActual.textContent = '本局实际：' + fmtMove(f && f.move);
-        // 这几块是定高的（翻手不跳），文案长度由写入方保证；title 只是给"读数+长视角名"这种临界情况留个兜底
-        [rpValue, rpSugHead, rpActual].forEach(el => { el.title = el.textContent || ''; });
+        [rpSugHead, rpActual].forEach(el => { el.title = el.textContent || ''; });
         rpViewRed.classList.toggle('best', replay.selfIdx === 0);
         rpViewBlue.classList.toggle('best', replay.selfIdx === 1);
         renderSuggestions();
@@ -3216,12 +3271,11 @@ self.onmessage = function(e) {
         c.beginPath(); c.moveTo(0, h / 2); c.lineTo(w, h / 2); c.stroke(); c.setLineDash([]);
     }
 
-    function barMark(c, w, h, y, text, low) {
+    function barMark(c, w, h, y, text) {
         c.font = 'bold 12px sans-serif'; c.textAlign = 'center';
         const ty = Math.max(12, Math.min(h - 5, y - 5));
         c.lineWidth = 3; c.strokeStyle = 'rgba(0,0,0,0.6)'; c.strokeText(text, w / 2, ty);
         c.fillStyle = '#fff'; c.fillText(text, w / 2, ty);
-        if (low) { c.font = '10px sans-serif'; c.fillStyle = '#e0c080'; c.fillText('?', w / 2, 11); }
     }
 
     // 左条：己方胜率，分界线以下染己方色（100% → 满条，50% → 正中均势线）
@@ -3231,15 +3285,13 @@ self.onmessage = function(e) {
         const w = wrBarEl.width, h = wrBarEl.height;
         barBase(c, w, h);
         const sv = selfView(replay.idx);
-        if (!sv) return;                       // 没有依据就只留底色：半条假色块比空条更坏
+        if (!sv || sv.wr === null) return;     // 没有依据就只留底色：半条假色块比空条更坏
         const y = h * (1 - sv.wr);
-        c.globalAlpha = sv.low ? 0.4 : 1;
         c.fillStyle = RP_COLORS[replay.selfIdx]; c.fillRect(0, y, w, h - y);
         c.fillStyle = RP_COLORS[1 - replay.selfIdx]; c.fillRect(0, 0, w, y);
-        c.globalAlpha = 1;
         c.strokeStyle = '#ffffff'; c.lineWidth = 2;
         c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
-        barMark(c, w, h, y, fmtPct(sv.wr), sv.low);
+        barMark(c, w, h, y, fmtPct(sv.wr));
     }
 
     // 右条：期望最终面积差，发散量纲 —— 中线是 0 格，往上己方多、往下己方少，满条 ±RP_CELL_MAX 格
@@ -3249,17 +3301,15 @@ self.onmessage = function(e) {
         const w = areaBarEl.width, h = areaBarEl.height, zero = h / 2;
         barBase(c, w, h);
         const sv = selfView(replay.idx);
-        if (!sv) return;
+        if (!sv || sv.cells === null) return;
         const cells = Math.max(-RP_CELL_MAX, Math.min(RP_CELL_MAX, sv.cells));
         const y = zero * (1 - cells / RP_CELL_MAX);
-        c.globalAlpha = sv.low ? 0.4 : 1;
         c.fillStyle = RP_COLORS[cells >= 0 ? replay.selfIdx : 1 - replay.selfIdx];
         c.fillRect(0, Math.min(y, zero), w, Math.abs(zero - y));
-        c.globalAlpha = 1;
         c.strokeStyle = '#ffffff'; c.lineWidth = 2;
         c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
         // 条上只写 "+12.3"（46px 宽放不下 "+12.3格"），单位由读数行与图例说明
-        barMark(c, w, h, y, fmtCells(cells), sv.low);
+        barMark(c, w, h, y, fmtCells(cells));
     }
 
     function drawBars() {
@@ -3280,16 +3330,18 @@ self.onmessage = function(e) {
         if (n < 2) return;
         const stepX = (w - 2 * pad) / (n - 1);
         const xOf = k => pad + k * stepX;
-        const yOfWr = sv => (h - pad) - sv.wr * (h - 2 * pad);
-        const yOfCells = sv => zero - Math.max(-1, Math.min(1, sv.cells / RP_CELL_MAX)) * (zero - pad);
-        // 断点（没判读的帧）不连线：整局判读是逐帧回来的，连过去就成了一条假直线
+        const yOfWr = sv => Number.isFinite(sv.wr) ? (h - pad) - sv.wr * (h - 2 * pad) : null;
+        const yOfCells = sv => Number.isFinite(sv.cells)
+            ? zero - Math.max(-1, Math.min(1, sv.cells / RP_CELL_MAX)) * (zero - pad) : null;
+        // 断点（没判读的帧、或那一条没有读数的帧）不连线：整局判读是逐帧回来的，连过去就成了一条假直线
         const polyline = (yOf) => {
             c.beginPath();
             let started = false;
             for (let k = 0; k < n; k++) {
                 const sv = selfView(k);
-                if (!sv) { started = false; continue; }
-                const x = xOf(k), y = yOf(sv);
+                const y = sv ? yOf(sv) : null;
+                if (y === null) { started = false; continue; }
+                const x = xOf(k);
                 if (!started) { c.moveTo(x, y); started = true; } else c.lineTo(x, y);
             }
             c.stroke();
@@ -3371,18 +3423,13 @@ self.onmessage = function(e) {
 
     function setAIProgress(value) {
         if (!aiProgressBar) return;
-        if (game.mode === 'pve') {
-            aiProgressBar.style.display = 'block';
-            aiProgressFill.style.width = (value === null ? 0 : Math.round(value * 100)) + '%';
-        } else {
-            if (value === null) {
-                aiProgressBar.style.display = 'none';
-                aiProgressFill.style.width = '0%';
-            } else {
-                aiProgressBar.style.display = 'block';
-                aiProgressFill.style.width = Math.round(value * 100) + '%';
-            }
+        if (game.mode !== 'pve' || aiDifficulty === 'tongxuan') {
+            aiProgressBar.style.display = 'none';
+            aiProgressFill.style.width = '0%';
+            return;
         }
+        aiProgressBar.style.display = 'block';
+        aiProgressFill.style.width = (value === null ? 0 : Math.round(value * 100)) + '%';
     }
 
     function aiTurn() {
@@ -3894,6 +3941,16 @@ self.onmessage = function(e) {
         if (aiControlBar) aiControlBar.style.display = (game.mode === 'pve') ? 'flex' : 'none';
         if (game.mode !== 'pve') setAIProgress(null);
         else setAIProgress(0);
+        updateDifficultyLock();
+    }
+    // 一局之内不许换难度：中途换档等于换对手强度，这一局的胜负就没法算了。
+    // 所以只在"人机模式 + 还没落子"时给出按钮，落子后（含终局/复盘）整行藏起来。
+    function updateDifficultyLock() {
+        const row = document.getElementById('difficultyRow');
+        if (!row) return;
+        // 走过一步/进入放墙/换过手都算对局已开始（步数从 3 掉下来 = 这一手已经走出去了）
+        const started = game.gameOver || game.phase !== 'move' || game.stepRemaining < 3 || replay.frames.length > 1;
+        row.style.display = (game.mode === 'pve' && !started) ? '' : 'none';
     }
     diffBtns.forEach(btn => {
         btn.addEventListener('click', () => {
@@ -3906,10 +3963,12 @@ self.onmessage = function(e) {
                     if (nnWorker) nnWorker.terminate();
                     nnWorker = null; nnLoading = null; nnDisabled = false; nnReady = false; nnAlive = false; nnWhy = null;
                 }
+                setAIProgress(null);              // 通玄不显示进度条
                 // 提前开始取权重，别卡在 AI 回合
                 getNNWorker().then(w => { if (w && aiDifficulty === 'tongxuan') w.postMessage({ warmup: true }); });
             } else {
-                nnBadge('未启用', '');
+                nnBadge('未启用', '');            // nnBadge 内部会隐藏 tongxuanInfo
+                setAIProgress(0);                 // 专家/大师显示进度条
                 if (nnWorker) { nnWorker.terminate(); nnWorker = null; }
                 nnLoading = null; nnDisabled = false; nnReady = false; nnInfo = null;
             }

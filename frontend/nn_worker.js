@@ -1,21 +1,26 @@
 /*
  * 「通玄」难度档的 Worker：浏览器内 ONNX 推理 + PUCT 搜索。（「通玄」是难度名，模型对外叫 xuantian NN）
- * 权重文件 models/tongxuan_v1.onnx 即内部训练产物 gen007A3 = 对外的 xuantian 01。
+ * 对弈权重 models/xuantian_02.onnx = 内部训练产物 gen008B1 = 对外的 xuantian 02（冠军名按代递增）。
+ * 分析权重 models/area_v1.onnx = gen008C（纯面积差头，**不参与对弈、不参与搜索**，只喂复盘右条读数）。
  *
  * 协议：与旧 AI Worker 兼容——收 { state, depth, id }，回 { type:'result', value:{moves,wallDir} }。
  * 追加：{type:'status', phase:'loading'|'ready'|'failed', info}、{type:'error', message}、
  *       {ping:true} -> {type:'pong', script, deps, loadError}（主线程用它 3 秒内判定 Worker 是否活着）。
  * 复盘：{analyze:true, states:[...], id} -> 每帧一条 {type:'analysis', id, partial:true, index, value}
- *       （value = {solved,rn,rw,rc,tn,tw,td,over}；读数用 rn/rw/rc = 随机推演的样本数、
- *        推演得分与推演终局面积差均值（都取本帧行棋方视角），over=true 表示这帧已经终局，
- *        solved=±1 表示规则已判定；tn/tw/td 是搜索树里真走到终局的模拟，只作参考），
+ *       （value = {solved,pw,ac,over[,rc]}；面板那两条都是**本帧行棋方的静态形势判断**，不搜索：
+ *        pw = 冠军网络 value 头的胜率（gen008B1 是 win 口径 ±1/0 ⇒ (v+1)/2 就是概率，见 NOTES §52），
+ *        ac = 分析网络面积头的期望最终面积差（格，正=行棋方多），
+ *        over=true 表示这帧已经终局（此时 rc = 真实终局面积差，不是估计），
+ *        solved=+1 表示规则已判定（本帧存在一步制胜的着法，与样本无关）），
+ *       全部跑完再补一条 {type:'analysis', id, done:true}；
  *       全部跑完再补一条 {type:'analysis', id, done:true}；
  *       {suggest:true, state, id} -> {type:'suggestion', id, value, meta}（meta.top = 前 3 着法，
- *       meta.rn/rw/rc 同上一行的推演口径）。
+ *       meta.pw/ac 同上一行的口径）。
  * depth 对本 Worker 无意义（NN 用时间预算），收到后忽略。
  *
  * 自适应：初始化时用一次真实搜索标定 ms/访问，据此选档位（budgetMs / simsMax），
  * 因此不同机器拿到的是"同一时间预算下该机跑得动的最多访问数"，而不是固定 sims。
+ * ⚠ 这只作用于**对弈**与**当前帧首选**；复盘折线不搜索（见下方复盘分析通道的注释）。
  *
  * 任何环节失败（ORT/模型加载、推理异常、无合法着法）都只回 error，
  * 由主线程回退旧 AI Worker——本文件不 import 旧 AI，保持单向依赖。
@@ -23,7 +28,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v6';
+const REV = 'v10';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -37,7 +42,10 @@ async function fetchChecked(url) {
 async function toBlobUrl(url, type) {
     return URL.createObjectURL(new Blob([await (await fetchChecked(url)).arrayBuffer()], { type }));
 }
-const MODEL_URL = abs(`models/tongxuan_v1.onnx?rev=${REV}`);
+const MODEL_URL = abs(`models/xuantian_02.onnx?rev=${REV}`);
+// 面积差分析头。它**只服务复盘右条那一个读数**：不进搜索、不进 think()，
+// 所以加载失败绝不能连累对弈 —— areaNet 保持 null，复盘只有右条空着（读数写"—"），左条照常。
+const AREA_URL = abs(`models/area_v1.onnx?rev=${REV}`);
 const DEPS = [abs(`ort/ort.wasm.min.js?rev=${REV}`), abs(`siege_engine.js?rev=${REV}`), abs(`nn_ai.js?rev=${REV}`)];
 
 const send = (m) => self.postMessage(m);
@@ -63,17 +71,19 @@ if (!loadError && (!E || !NN || typeof ort === 'undefined')) {
 const MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test((self.navigator && navigator.userAgent) || '');
 
 // 模型对外名（换代时和 index.html 里的 NN_NAME 一起改：Worker 是独立作用域，拿不到页面那个）
-const NN_NAME = 'xuantian 01';
+const NN_NAME = 'xuantian 02';
 // 档位：按标定到的 ms/访问（含树开销）从上往下取第一个满足的档。
-// 这里只报档位，不报模型名 —— 徽章上的「xuantian 01·极」由页面拼，名字只有一处定义。
+// 这里只报档位，不报模型名 —— 徽章上的「xuantian 02·极」由页面拼，名字只有一处定义。
 const TIERS = [
-    { name: '极', maxMsPerSim: 3,   budgetMs: 3000, simsMax: 1500 },
+    { name: '极', maxMsPerSim: 3,   budgetMs: 3600, simsMax: 1200 },   // 1200 = 训练/自博弈/arena 的统一口径
     { name: '高', maxMsPerSim: 8,   budgetMs: 2600, simsMax: 700 },
     { name: '中', maxMsPerSim: 20,  budgetMs: 2600, simsMax: 320 },
     { name: '初', maxMsPerSim: 1e9, budgetMs: 2400, simsMax: 140 }
 ];
 
 let net = null;
+let areaNet = null;        // 面积差分析头（可为 null：缺它只影响复盘右条，不影响对弈）
+let areaError = null;
 let plan = TIERS[TIERS.length - 1];
 let initPromise = null;
 let initFailed = false;
@@ -105,6 +115,20 @@ async function init() {
     });
     net = NN.createOrtNet(ort, session);
 
+    // 分析头单独兜错：404 / 托管端 MIME / 内存不够都只记一条原因，绝不把对弈档一起拖成 failed。
+    try {
+        const abuf = await (await fetchChecked(AREA_URL)).arrayBuffer();
+        if (abuf.byteLength < 1e6) throw new Error('分析模型文件异常 ' + abuf.byteLength);
+        const asession = await ort.InferenceSession.create(abuf, {
+            graphOptimizationLevel: 'all',
+            executionProviders: ['wasm']
+        });
+        areaNet = NN.createOrtNet(ort, asession);
+    } catch (err) {
+        areaNet = null;
+        areaError = (err && err.message) || String(err);
+    }
+
     // 标定：跑一次短搜索，用模块自己上报的 sims/ms 反推真实 ms/访问（含树与安全网开销）
     const st = E.newGame();
     st.currentPlayer = 1;
@@ -118,7 +142,8 @@ async function init() {
     send({
         type: 'status', phase: 'ready',
         info: { tier: plan.name, msPerSim: +msPerSim.toFixed(2), budgetMs: plan.budgetMs,
-                simsMax: plan.simsMax, threads, isolated, initMs: Date.now() - t0, mobile: MOBILE }
+                simsMax: plan.simsMax, threads, isolated, initMs: Date.now() - t0, mobile: MOBILE,
+                area: areaNet ? 'ok' : areaError }
     });
 }
 
@@ -139,34 +164,64 @@ async function think(state, id) {
 /*
  * 与对局通道共用 worker 和 net，但结果走自己的 {type:'analysis'|'suggestion'} + id，
  * 主线程按 id 找回调，绝不碰 think() 的 nnAbort/进度条。
- * 复盘用的是固定小预算（不跟对局档位走）：翻一手就是一次短搜索，
- * 手感必须"立刻出"，这里要的是判读速度不是棋力。
+ *
+ * 折线的语义 = **静态形势判断**：每帧只取"这个局面 + 本帧行棋方"的网络预报，不搜索（3.1.6 用户拍板）。
+ * 为什么不搜：旧版每帧跑 400 访问，而那次搜索的产物一个都没进这两条读数 —— pw 用的是根上的一次前向
+ * （nn_ai.js:411 `meta.rootV = ev.v`，且折线通道连 topK 都不传 ⇒ rootV 恒 undefined、
+ * 必然走 netReadouts 的补前向分支）。等于花 400 倍的钱买 1 个不来自那 400 倍的钱的数。
+ * 删掉之后整局 30–60 帧从 ~19s 掉进 1s 内，一次画完。
+ *
+ * 两个已知代价写进 NOTES §54，别再当故障查：
+ *  1) 折线偏平。value 头是 L2 训出来的**条件均值**，最优解就是把领先与落后都往 50% 收（§50.3 那条警告）。
+ *  2) 「一方走完好手之后胜率反而上一格」会长期存在：走前那一帧含"他可能走歪"的平均，
+ *     走后那一帧是兑现之后的局面，台阶就是那份差价。要抹掉只能换成"最好可达"口径（本轮已否决）。
  */
-const REPLAY = { budgetMs: 900, simsMax: 400, topK: 3, rollouts: 300 };
-// 整局折线：每帧一次搜索（和"前三选"同规模 400 访问）+ 300 局随机推演。
-// 胜率的原料用推演而不是网络 value —— 后者训练目标里有 0.7 的胜负打底，全盘 |v|≤0.59 全在死区，
-// 反解不出分差也反解不出胜率（NOTES §39/§42）。推演不碰网络，一帧 20–105ms，比那一搜便宜。
-const ANALYZE = { budgetMs: 500, simsMax: 400, rollouts: 300 };
+const REPLAY = { budgetMs: 900, simsMax: 400, topK: 3, cPuct: 1.5 };   // 当前帧首选：这个必须留树，它答的是"棋"不是"形势"
+const AREA_CELLS = 49;   // diff 口径 = 面积差/49 ⇒ 乘回来才是格数（标签满幅实测 ±47，见 §50.2）
 
-// 单帧判读：终局帧直接给判定值（不必搜），其余跑一次短搜索 + 一批推演
-// rc = 推演均值下的期望最终面积差（正=本帧行棋方多），与 rw 同一批样本、同一个视角
-async function analyzeFrame(state) {
-    const p = state.currentPlayer;
-    const t = E.terminalInfo(state);
-    if (t) return { solved: t.winner === 'draw' ? 0 : (t.winner === p ? 1 : -1), rn: 0, rw: 0,
-                    rc: p === 0 ? t.s0 - t.s1 : t.s1 - t.s0, over: true, tn: 0, tw: 0, td: 0 };
-    const roll = NN.rolloutScore(state, ANALYZE.rollouts, 84);
-    const r = await NN.chooseAction(state, p, { net, budgetMs: ANALYZE.budgetMs, simsMax: ANALYZE.simsMax, cPuct: 1.5 });
-    const m = (r && r.meta) || {};
-    return { solved: m.solved || 0, rn: roll.n, rw: roll.w, rc: roll.n ? roll.d / roll.n : 0,
-             tn: m.tn || 0, tw: m.tw || 0, td: m.td || 0,
-             sims: m.sims, ms: m.ms, why: m.why };
+// 一帧的网络读数：pw=胜率(0..1，行棋方视角)，ac=期望最终面积差(格，正=行棋方多)。缺哪个给 null。
+async function netReadouts(state, p, rootV) {
+    let v = rootV;
+    if (!Number.isFinite(v)) {
+        // 折线通道恒走这里（不搜索就没有 rootV）；suggest 通道带 rootV，而它本来就是同一次前向的值
+        // ⇒ 同一局面在折线上和在当前帧读数上是同一个数，两套口径不会打架。
+        try { v = (await net.evaluate(state, p)).v; } catch (err) { v = NaN; }
+    }
+    const pw = Number.isFinite(v) ? Math.min(1, Math.max(0, (v + 1) / 2)) : null;
+    let ac = null;
+    if (areaNet) {
+        try {
+            const av = await areaNet.evaluate(state, p);
+            if (Number.isFinite(av.v)) ac = Math.min(1, Math.max(-1, av.v)) * AREA_CELLS;
+        } catch (err) { /* 单帧评估失败不打断整局判读：这帧 ac 留空，面板写"未定"，不编数 */ }
+    }
+    return { pw, ac };
 }
 
 /*
- * 逐帧回流（partial:true, index:i），主线程画一条亮一条 —— 整局 30-60 帧，攒完要十几秒，
- * 一次性回会让用户盯着一片空白以为坏了。帧之间 setTimeout(0) 让出事件循环：
- * 否则"翻一手"发的 suggest 请求会被排在整局任务后面，界面就卡住了。
+ * 单帧判读：终局帧给写在局面里的真值；其余帧 = 一步制胜探测 + 两次前向。
+ * 规则判定只保留这一条：存在一步制胜 ⇒ 胜率是**判定**的 100%，不是估计，前端因此不画"预报"字样。
+ * 它不碰网络（对 K≈39 个着法各做一次 apply + terminalInfo），是纯引擎运算，保留的代价约几毫秒。
+ * 反方向的「怎么都输」不证：那要把每个己方着法之后对手的每个应手都探一遍（O(K²)，
+ * nn_ai.js 的 oppCanWinNext），而真到那种局面 value 头本来就报得极低、后面终局帧还会给真值 ——
+ * 花整条折线的预算换一帧的确定性不值得。
+ */
+async function analyzeFrame(state) {
+    const p = state.currentPlayer;
+    const t = E.terminalInfo(state);
+    if (t) return { solved: t.winner === 'draw' ? 0 : (t.winner === p ? 1 : -1),
+                    rc: p === 0 ? t.s0 - t.s1 : t.s1 - t.s0, over: true };
+    let solved = 0;
+    const legal = E.legalActions(state, p);
+    if (legal.length && NN.findImmediateWin(state, p, legal)) solved = 1;
+    const { pw, ac } = await netReadouts(state, p);
+    return { solved, pw, ac };
+}
+
+/*
+ * 逐帧回流（partial:true, index:i）：现在一帧毫秒级，整局一瞬攒完，看起来就是"一次画完"。
+ * 仍然保留逐条发 + 帧间 setTimeout(0)：一是保住"边算边亮"的旧行为（大棋谱不至于整块白一下），
+ * 二是让出事件循环，别让整局任务把"翻一手"发的 suggest 排在后面。
  */
 async function runAnalyze(states, id) {
     for (let i = 0; i < states.length; i++) {
@@ -174,7 +229,7 @@ async function runAnalyze(states, id) {
         try {
             value = await analyzeFrame(states[i]);
         } catch (err) {
-            value = { solved: 0, tn: 0, tw: 0, td: 0, failed: (err && err.message) || String(err) };
+            value = { solved: 0, failed: (err && err.message) || String(err) };
         }
         send({ type: 'analysis', id, partial: true, index: i, value });
         await new Promise(r => setTimeout(r, 0));
@@ -184,13 +239,14 @@ async function runAnalyze(states, id) {
 
 async function runSuggest(state, id) {
     const player = state.currentPlayer;
-    const roll = NN.rolloutScore(state, REPLAY.rollouts, 84);
     const r = await NN.chooseAction(state, player, {
-        net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: 1.5, topK: REPLAY.topK
+        net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, topK: REPLAY.topK
     });
     if (!r) { send({ type: 'suggestion', id, error: '无合法着法' }); return; }
-    // 本手这一搜顺带出的读数：主线程立刻拿去画形势条，不用等整局判读跑到这一帧
-    r.meta = Object.assign({}, r.meta, { rn: roll.n, rw: roll.w, rc: roll.n ? roll.d / roll.n : 0 });
+    // 本手这一搜顺带出的读数：主线程立刻拿去画形势条，不用等整局判读跑到这一帧。
+    // cfg 是给面板标题报口径用的（sims 上限/PUCT 常数/预算），规则判定帧也带上
+    const rd = await netReadouts(state, player, r.meta && r.meta.rootV);
+    r.meta = Object.assign({}, r.meta, rd, { cfg: { simsMax: REPLAY.simsMax, budgetMs: REPLAY.budgetMs, cPuct: REPLAY.cPuct } });
     send({ type: 'suggestion', id, value: { moves: r.moves, wallDir: r.wallDir }, meta: r.meta });
 }
 
