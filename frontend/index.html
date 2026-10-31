@@ -269,6 +269,15 @@
         }
         .diff-btn:hover { background: #7a6a54; }
         .diff-btn.active:hover { background: #c7a77d; }
+        /* 难度按钮上的标定分：由 ELO.byDiff 涂上去（数字只存一处）。小两号、压暗，别抢难度名的视觉重量。 */
+        .diff-btn .dif-elo {
+            font-style: normal;
+            font-size: 11px;
+            opacity: .62;
+            margin-left: 5px;
+            letter-spacing: 0;
+        }
+        .diff-btn.active .dif-elo { opacity: .78; }
         #aiProgressBar {
             width: 100%;
             max-width: 360px;
@@ -429,7 +438,9 @@
         .rp-btn.best { background: #c7a77d; color: #2d2d2d; }
 
         #aboutBtn,
-        #closeAboutBtn {
+        #closeAboutBtn,
+        #eloBtn,
+        #closeEloBtn {
             padding: 6px 12px;
             background:#7a6a54;
             color:#eee;
@@ -455,6 +466,39 @@
             border-radius: 10px;
             max-width: 320px;
             text-align: left;
+        }
+        /* 强度对照表要放四列数字，比"关于作者"那张贴纸宽一档；手机上不许顶出屏幕 */
+        .modal-box.elo-box {
+            max-width: min(430px, 92vw);
+            /* 这张表比一屏高（笔记本 720 就装不下）：弹窗自己滚，别让 overlay 居中把表头顶出可视区 */
+            max-height: 86vh;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+        }
+        .elo-tbl {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin: 4px 0 10px;
+        }
+        .elo-tbl th, .elo-tbl td {
+            padding: 2px 3px;
+            text-align: right;
+            border-bottom: 1px solid #ece4d8;
+        }
+        .elo-tbl th:first-child, .elo-tbl td:first-child { text-align: left; }
+        .elo-tbl th { color: #8a7a62; font-weight: 600; }
+        /* 数字一律等宽，不然 1979 和 1553 会对不齐，眼睛会以为宽度有意义 */
+        .elo-tbl td.num, .elo-tbl th.num { font-variant-numeric: tabular-nums; }
+        .elo-tbl tr.live td { font-weight: 700; background: #fdf3e2; }
+        .elo-tbl tr.hist td { color: #999; }
+        .elo-note { font-size: 12px; color: #6b6b6b; line-height: 1.55; margin: 4px 0; }
+        .elo-note b { color: #333; }
+        .elo-sub { font-size: 12px; color: #8a7a62; margin: 10px 0 2px; font-weight: 600; }
+        /* 360 宽的手机：表头那几个字不许竖排，字号先降一档 */
+        @media (max-width: 500px) {
+            .elo-tbl { font-size: 12px; }
+            .elo-tbl th { white-space: nowrap; }
         }
         @media (max-width: 500px) {
             body {
@@ -639,14 +683,15 @@
         <span id="tongxuanInfo" class="tx-info" style="display:none"></span>
         <div id="difficultyRow">
             <span>难度：</span>
-            <button class="diff-btn active" data-diff="expert">专家</button>
-            <button class="diff-btn" data-diff="master">大师</button>
-            <button class="diff-btn" data-diff="tongxuan">通玄</button>
+            <button class="diff-btn active" data-diff="expert">专家<i class="dif-elo"></i></button>
+            <button class="diff-btn" data-diff="master">大师<i class="dif-elo"></i></button>
+            <button class="diff-btn" data-diff="tongxuan">通玄<i class="dif-elo"></i></button>
         </div>
     </div>
     <div id="bottomBar">
         <div id="statsText">战绩：您 0 胜 - 对方 0 胜</div>
         <button id="analyzeBtn" class="rp-btn" style="display:none">🔍 复盘分析</button>
+        <button id="eloBtn">强度对照</button>
         <button id="aboutBtn">关于作者</button>
     </div>
 
@@ -664,10 +709,18 @@
             <button id="closeAboutBtn">关闭</button>
         </div>
     </div>
+
+    <div id="eloOverlay" class="modal-overlay" style="display:none;">
+        <div class="modal-box elo-box">
+            <h3>强度对照（标定 Elo）</h3>
+            <div id="eloBody"></div>
+            <button id="closeEloBtn">关闭</button>
+        </div>
+    </div>
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.12 2026-10-31  感谢游玩~
+        <br>版本信息：Version 3.1.13 2026-11-01  感谢游玩~
     </div>
 </div>
 <script>
@@ -1860,6 +1913,92 @@ self.onmessage = function(e) {
     // 权重文件名跟着代走：xuantian 01 = tongxuan_v1.onnx（gen007A3，历史名保留在仓库里），
     // xuantian 02 = xuantian_02.onnx（gen008B1）。以 xuantian 命名的就是每一代选出来的冠军模型。
     const NN_NAME = 'xuantian 02';
+    // ---- 强度标定（Elo）----
+    // 尺子：把 results/ 里全部 sims=1200 口径的对拍（1,816 局）合成一张强度表（带和棋的
+    // Bradley–Terry / Davidson 极大似然 + 2000 次 bootstrap），重算命令：
+    //     node engine/elo_ledger.js
+    // 尺度：每 +400 分 = 强度 ×10；每 +100 分 ≈ 期望得分 64%。
+    // 两点必须让看的人知道，否则这张表是在骗人：
+    //  ① **锚点是大师（ai4）= 2000**，它是实测进表的（425 局）⇒ 下面每一行的区间都是相对这个锚点的。
+    //  ② **专家 = 1500 是占位标注，不是量出来的**：专家没有 sims=1200 口径的可靠对拍，唯一沾到它的
+    //     是一条 48 局的孤立分量，再往主尺接要靠一条 19 局、sims 未记录且修树前的桥梁臂（链条推算
+    //     约 1947，两处口径都不可证）⇒ 「专家比大师弱 500 分」这个读法不成立，别据此算胜率。
+    // 难度按钮与台账是同一个 AI：engine/siege_ai.js 由 engine/extract_worker.js 从本页内嵌的
+    // 旧 AI 逐字节抽出（ai3=深度3=专家，ai4=深度4=大师），上线前 check_frontend_sync.js 会卡漂移。
+    const ELO = {
+        unit: 400, sims: 1200, games: 1816, date: '2026-11-01',
+        anchor: '大师 = 2000（锚点）',
+        // [显示名, Elo, 95% 区间下, 上, 对拍局数, 可选：区间格改写的短说明]
+        rows: [
+            [NN_NAME + '（通玄 · 线上）', 2426, 2356, 2506, 759],
+            ['xuantian 01（上一代冠军）', 2371, 2312, 2439, 767],
+            ['大师', 2000, 2000, 2000, 425, '锚点'],
+            ['专家', 1500, 1500, 1500, 0, '未测定 · 暂定']
+        ],
+        // 历代内部产物（同一把尺上的读数，不参与"选难度"，只说明这条尺是怎么走过来的）
+        hist: [
+            ['gen008A1（未晋升）', 2433, 2358, 2516, 191],
+            ['gen009（未晋升）', 2429, 2348, 2519, 377],
+            ['gen010（未晋升）', 2398, 2298, 2506, 96],
+            ['gen008B（未晋升）', 2393, 2317, 2477, 381],
+            ['gen006（上一上代）', 2283, 2217, 2354, 349],
+            ['gen008A（未晋升）', 2262, 2167, 2359, 189],
+            ['gen004（早期）', 2180, 2108, 2265, 98]
+        ],
+        // 难度按钮上的数（与台账同源，按钮只显示这一个整数）
+        byDiff: { expert: 1500, master: 2000, tongxuan: 2426 },
+        byDiffNote: {
+            expert: '专家 1500：未测定，线上先按 1500 标注（链条推算约 1947，但那截链条口径不可证）',
+            master: '大师 2000：这把尺的锚点，425 局实测进表',
+            tongxuan: NN_NAME + ' 2426：对大师 +426 分（95% 区间 [356,506]，95 局实测 85.8% 得分率）'
+        },
+        // 实测差值（主尺内部直接对拍）⇒ 弹窗里"可信的那一列"
+        gaps: [
+            ['通玄 − 大师', 426, 356, 506, '95 局 · 得分 85.8%'],
+            ['通玄 − xuantian 01', 56, 2, 113, '95 局 · 得分 58.9%'],
+            ['xuantian 01 − 大师', 371, 312, 439, '134 局 · 得分 86.6%']
+        ],
+        // 回退话术要用的一次性数字，单独钉住（别拿 gaps[0] 的下标去猜，换代顺序会动）
+        degradeGap: 426
+    };
+    // 难度按钮上的角标与"强度对照"弹窗都由上面这一块生成 ⇒ 换代只改 ELO 一处，不在两处抄数
+    function eloRowHTML(r, cls) {
+        const live = r[0].indexOf(NN_NAME) === 0 ? ' live' : '';
+        return '<tr class="' + (cls || '') + live + '"><td>' + r[0] + '</td>'
+            + '<td class="num">' + r[1] + '</td>'
+            + '<td class="num">' + (r[5] || (r[4] ? '[' + r[2] + ', ' + r[3] + ']' : '—')) + '</td>'
+            + '<td class="num">' + (r[4] || '—') + '</td></tr>';
+    }
+    function eloModalHTML() {
+        const head = '<tr><th>对手 / 模型</th><th class="num">Elo</th><th class="num">95% 区间</th><th class="num">局数</th></tr>';
+        const gaps = ELO.gaps.map(g => '<div><b>' + g[0] + ' = +' + g[1] + '</b>'
+            + '（区间 [' + g[2] + ', ' + g[3] + ']，' + g[4] + '）</div>').join('');
+        return '<table class="elo-tbl">' + head + ELO.rows.map(r => eloRowHTML(r)).join('') + '</table>'
+            + '<div class="elo-sub">实测差值（这一档最可信：同一把尺内部直接对拍出来的）</div>'
+            + '<div class="elo-note">' + gaps + '</div>'
+            + '<div class="elo-sub">这张尺是怎么来的</div>'
+            + '<div class="elo-note">把历史全部 <b>sims=1200</b> 口径的对拍（' + ELO.games + ' 局，配对开局、'
+            + '剔 12 手内自终止的陷阱局）合成一张强度表：带和棋的 Bradley–Terry 极大似然 + 2000 次 bootstrap。</div>'
+            + '<div class="elo-note">尺度：<b>每 +400 分 = 强度 ×10</b>（+426 分 ≈ 期望得分率 91%）。</div>'
+            + '<div class="elo-note"><b>锚点是大师 = 2000</b>（425 局实测进表）⇒ 表里每一行的区间都是相对这个锚点算的。</div>'
+            + '<div class="elo-note"><b>专家 = 1500 是占位标注，不是量出来的</b>：专家没有 sims=1200 口径的可靠对拍，'
+            + '链条推算约 1947 但那截链条口径不可证 ⇒ 别拿"专家比大师弱 500 分"去算任何胜率。</div>'
+            + '<div class="elo-note">通玄按机器分档自适应搜索量（1200 / 700 / 320 / 140 访问每手）：本表标的是 <b>1200</b> 那一档。'
+            + '实测 800 与 1200 差 4pp（±11，分辨不出），更低档没有足够样本 ⇒ 慢机会比本表低，低多少未测。</div>'
+            + '<div class="elo-sub">历代模型在同一把尺上（内部台账，不参与选难度）</div>'
+            + '<table class="elo-tbl">' + head + ELO.hist.map(r => eloRowHTML(r, 'hist')).join('') + '</table>'
+            + '<div class="elo-note">标定日期 ' + ELO.date + ' · 重算：node engine/elo_ledger.js</div>';
+    }
+    function paintEloChips() {
+        document.querySelectorAll('.diff-btn').forEach(b => {
+            const d = b.dataset.diff, chip = b.querySelector('.dif-elo');
+            if (!chip) return;
+            chip.textContent = ELO.byDiff[d] == null ? '' : ELO.byDiff[d];
+            if (ELO.byDiffNote[d]) b.title = ELO.byDiffNote[d];
+        });
+        const body = document.getElementById('eloBody');
+        if (body) body.innerHTML = eloModalHTML();
+    }
     // 失败必须"可见 + 快"：Worker 静默死掉 = 进度条不涨 + AI 永不落子，是最坏的体验。
     // 因此：创建即探测（ping 4 秒无回音 = 脚本没跑起来），加载状态写进页面上的 #tongxuanInfo。
     let nnWorker = null;
@@ -1909,7 +2048,7 @@ self.onmessage = function(e) {
         const why = reason || '未知原因';
         nnWhy = why;
         nnBadge(NN_NAME + ' 不可用：' + why.slice(0, 140), 'tx-bad', why);
-        statusMessage.textContent = '⚠ ' + NN_NAME + ' 不可用，本局改用大师';
+        statusMessage.textContent = '⚠ ' + NN_NAME + ' 不可用，本局改用大师（强度约 −' + ELO.degradeGap + '）';
         console.warn('[xuantian] 回退大师:', reason);
     }
     function nnFailNow(reason) {
@@ -4079,6 +4218,18 @@ self.onmessage = function(e) {
             aboutOverlay.style.display = 'none';
         }
     };
+
+    // 强度对照：数据在 ELO（靠近 NN_NAME 那里），这里只管涂按钮角标和开关弹窗
+    const eloBtn = document.getElementById('eloBtn');
+    const eloOverlay = document.getElementById('eloOverlay');
+    const closeEloBtn = document.getElementById('closeEloBtn');
+    paintEloChips();
+    if (eloBtn && eloOverlay) {
+        eloBtn.onclick = () => { eloOverlay.style.display = 'flex'; };
+        const hideElo = () => { eloOverlay.style.display = 'none'; };
+        if (closeEloBtn) closeEloBtn.onclick = hideElo;
+        eloOverlay.onclick = (e) => { if (e.target === eloOverlay) hideElo(); };
+    }
 
     // ---- 规则 ----
     document.getElementById('rulesBtn').addEventListener('click', showRulesModal);
