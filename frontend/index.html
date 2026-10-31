@@ -487,20 +487,22 @@
             }
             .board-wrapper {
                 padding: 10px;
-                --cell: min(92vw, 330px);
+                /* 边长按容器内容盒算，不是按视口：.game-container 左右 12×2 + 本盒 padding 10×2 +
+                   标号槽 13 = 57px。以前写 92vw，360 宽的手机上算出 363px 的盒子，整页能横向搓动。 */
+                --cell: min(calc(100vw - 57px), 330px);
                 --gutter: 13px;
             }
             #boardRow { flex-wrap: wrap; gap: 8px; }
             #boardRow.in-replay { gap: 6px; }
             #boardRow.in-replay .board-wrapper { padding: 6px; --cell: min(72vw, 300px); --gutter: 11px; }
-            /* 两条形势条挤进来的那一行放不下原来的 92vw：复盘时棋盘让出宽度，窄屏才不横向溢出 */
-            #boardRow.in-replay canvas { width: min(72vw, 300px); height: min(72vw, 300px); }
+            /* 复盘时棋盘让出宽度，给两条形势条留出那一行（--cell 已在上头改小，画布跟着它走） */
             #wrBar, #areaBar { width: 26px; height: min(92vw, 330px); }
             #boardRow.in-replay #wrBar, #boardRow.in-replay #areaBar { width: 18px; height: min(72vw, 300px); }
             #analysisPanel { width: 100%; align-self: auto; }
             canvas {
-                width: min(92vw, 330px);
-                height: min(92vw, 330px);
+                /* 画布只认 --cell：以前这里把同一个尺寸又抄了一遍，改一处漏一处 */
+                width: var(--cell);
+                height: var(--cell);
             }
             #wrBar, #areaBar, #valueCurve { width: revert-layer; }
             .coord span { font-size: 10px; }
