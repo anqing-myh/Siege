@@ -215,6 +215,24 @@
         return dist;
     }
 
+    /* 归属面积差（纯规则，不数棋也不查网络）：每格判给「BFS 步数更少」的一方，取双方格数之差。
+     * 与下面 featurePlanes 的 plane 9 同一套 distMap、同一套邻接 ⇒ 它恒等于 plane9(我) − plane9(敌)：
+     * 同距（中立）格在两个视角里各记 0.5，做差正好抵消，所以这里对它记 0 不是漏算。
+     * 终局时**恰好等于真实面积差**：分隔之后双方都只到自己的区域，不存在「两方都到得了」的格。
+     * 3.1.15 起前端复盘右条那条读数用它，替换掉面积分析头（gen008C 跑满 20 轮 R² 只有 +0.064）。 */
+    function areaRaceDiff(state, player) {
+        const dMe = distMap(state, player), dOpp = distMap(state, 1 - player);
+        let s = 0;
+        for (let k = 0; k < N_CELLS; k++) {
+            const a = dMe[k], b = dOpp[k];
+            if (a < 0 && b < 0) continue;          // 双方都到不了：不在任何一方的区域里
+            if (b < 0) { s++; continue; }          // 只有视角方到得了
+            if (a < 0) { s--; continue; }          // 只有对方到得了
+            if (a < b) s++; else if (b < a) s--;   // 同距 → 争议格，对差值贡献 0
+        }
+        return s;
+    }
+
     /* 特征平面：10 × 49，perspective 玩家的视角
      * 0..3: 墙 top/right/bottom/left  4: 己方棋子  5: 对手棋子
      * 6: 己方3步可达  7: 对手3步可达  8: 当前连通域(=计分基数)
@@ -277,7 +295,7 @@
         NUM_ACTIONS, NUM_PLANES,
         inBounds, newGame, cloneState, neighbors, reachable, distMap,
         actionId, actionDecode, canPlaceWall, legalActions,
-        placeWall, applyAction, computeRegions, terminalInfo,
+        placeWall, applyAction, computeRegions, terminalInfo, areaRaceDiff,
         stateKey, featurePlanes, actionMask
     };
 });

@@ -307,7 +307,7 @@
             justify-content: center;
             gap: 14px;
         }
-        /* 两条形势条：左=模型胜率，右=期望最终面积差。都用 canvas 是为了和棋盘同一套像素绘制 */
+        /* 两条形势条：左=模型胜率，右=规则归属面积差。都用 canvas 是为了和棋盘同一套像素绘制 */
         #wrBar, #areaBar {
             display: none;
             width: 46px;
@@ -597,7 +597,7 @@
             <div class="rp-curve-wrap">
                 <div class="rp-legend" id="rpLegend">
                     <span><i id="lgWrSwatch"></i>胜率（实线 · 50% 均势）</span>
-                    <span><i class="dash"></i>最终面积差（虚线 · ±48 格）</span>
+                    <span><i class="dash"></i>归属面积差（虚线 · ±48 格）</span>
                 </div>
                 <canvas id="valueCurve" width="272" height="88"></canvas>
             </div>
@@ -680,7 +680,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.14 2026-11-01  感谢游玩~
+        <br>版本信息：Version 3.1.15 2026-11-01  感谢游玩~
     </div>
 </div>
 <script>
@@ -2008,7 +2008,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v12';   // 与 nn_worker.js 里的 REV 同步；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v13';   // 与 nn_worker.js 里的 REV 同步（对弈权重与脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -2823,12 +2823,13 @@ self.onmessage = function(e) {
      * frames[k] = 第 k 个"轮到谁"的局面，move = 从这一局面上实际走的那一手（终局帧为 null）。
      * 于是看第 k 帧时：模型首选 = 从 frames[k] 搜出来的前三手（点哪一行就按哪一行画盘），
      * values[k] 也是 frames[k] 的判读结果（{solved,pw,ac,rc,over,tn,tw,td}）。
-     * 两条读数都来自网络的 value 头（本帧行棋方视角）：pw = 冠军网络的胜率，
-     * ac = 面积分析网络的期望最终面积差（格）。左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
+     * 两条读数一条来自网络、一条来自规则（都是本帧行棋方视角）：pw = 冠军网络的胜率，
+     * ac = 规则 BFS 归属面积差（每格判给"谁步数更少"，格；3.1.15 起取代面积分析网络，见 nn_worker.js 的 ruleAreaDiff）。
+     * 左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
      * 为什么现在敢用网络头：xuantian 02 的 value 目标是 win 口径（±1/0），MSE 的最优解就是 2·p_胜−1
      * ⇒ (v+1)/2 本身就是校准概率，不再是上一代 mix 口径那种"0.7 打底、全盘 |v|≤0.59 全在死区、
-     * 反解出来每帧都是 0 格"的死数字（§39/§42 的老账，随 §52 定稿 win 一并作废）；面积差本来是
-     * 分析网络（diff 口径 d/49）的本职，不拿对弈网络的 value 去硬换算。
+     * 反解出来每帧都是 0 格"的死数字（§39/§42 的老账，随 §52 定稿 win 一并作废）；
+     * 面积差不再拿对弈网络的 value 去硬换算，也不再用分析网络（它 20 轮最好的 R² 只有 +0.064）。
      * 也不用搜索树里的终局样本 —— 400 访问在中盘只走到 0–32 个终局、还全挤在最佳线路上，
      * 一报就是 0% 或 100%（NOTES §42 实测）。要"模型觉得这手好不好"看首选行的 Q 与访问。
      */
@@ -2944,8 +2945,8 @@ self.onmessage = function(e) {
         return (mv.to.row * BOARD_SIZE + mv.to.col) * 4 + RP_DIRS.indexOf(mv.wall);
     }
 
-    // 帧存的是"本帧行棋方"的网络读数，翻成己方视角：胜率镜像 1-wr，面积差镜像取相反数。
-    // 两条各自独立：面积分析头没加载成功时右条空着（ac=null），不影响左条照常显示胜率。
+    // 帧存的是"本帧行棋方"的读数（网络胜率 + 规则面积差），翻成己方视角：胜率镜像 1-wr，面积差镜像取相反数。
+    // 两条各自独立：网络那一头没给读数时左条空着（pw=null），不影响右条照常显示规则面积差。
     function selfView(k) {
         const a = replay.values[k], f = replay.frames[k];
         if (!a || !f) return null;
@@ -3347,7 +3348,7 @@ self.onmessage = function(e) {
         barMark(c, w, h, y, fmtPct(sv.wr));
     }
 
-    // 右条：期望最终面积差，发散量纲 —— 中线是 0 格，往上己方多、往下己方少，满条 ±RP_CELL_MAX 格
+    // 右条：规则归属面积差，发散量纲 —— 中线是 0 格，往上己方多、往下己方少，满条 ±RP_CELL_MAX 格
     function drawAreaBar() {
         if (!areaBarEl || !replay.active) return;
         const c = areaBarEl.getContext('2d');

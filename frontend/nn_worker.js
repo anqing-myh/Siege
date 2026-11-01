@@ -1,7 +1,9 @@
 /*
  * 「通玄」难度档的 Worker：浏览器内 ONNX 推理 + PUCT 搜索。（「通玄」是难度名，模型对外叫 xuantian NN）
  * 对弈权重 models/xuantian_02.onnx = 内部训练产物 gen008B1 = 对外的 xuantian 02（冠军名按代递增）。
- * 分析权重 models/area_v1.onnx = gen008C（纯面积差头，**不参与对弈、不参与搜索**，只喂复盘右条读数）。
+ * 复盘右条的面积差读数（3.1.15 起）是**纯规则 BFS 归属**算出来的，不再用网络：
+ * 每格判给"谁步数更少"，取差。分析权重 models/area_v1.onnx（gen008C）因此**下线但留在仓库里当回滚点**，
+ * 没有任何代码引用它 ⇒ 浏览器不会再下载它。
  *
  * 协议：与旧 AI Worker 兼容——收 { state, depth, id }，回 { type:'result', value:{moves,wallDir} }。
  * 追加：{type:'status', phase:'loading'|'ready'|'failed', info}、{type:'error', message}、
@@ -9,10 +11,9 @@
  * 复盘：{analyze:true, states:[...], id} -> 每帧一条 {type:'analysis', id, partial:true, index, value}
  *       （value = {solved,pw,ac,over[,rc]}；面板那两条都是**本帧行棋方的静态形势判断**，不搜索：
  *        pw = 冠军网络 value 头的胜率（gen008B1 是 win 口径 ±1/0 ⇒ (v+1)/2 就是概率，见 NOTES §52），
- *        ac = 分析网络面积头的期望最终面积差（格，正=行棋方多），
+ *        ac = 规则 BFS 归属的面积差（格，正=行棋方多；与训练编码 plane 9 同一口径），
  *        over=true 表示这帧已经终局（此时 rc = 真实终局面积差，不是估计），
  *        solved=+1 表示规则已判定（本帧存在一步制胜的着法，与样本无关）），
- *       全部跑完再补一条 {type:'analysis', id, done:true}；
  *       全部跑完再补一条 {type:'analysis', id, done:true}；
  *       {suggest:true, state, id} -> {type:'suggestion', id, value, meta}（meta.top = 前 3 着法，
  *       meta.pw/ac 同上一行的口径）。
@@ -28,7 +29,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v12';
+const REV = 'v13';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -43,9 +44,6 @@ async function toBlobUrl(url, type) {
     return URL.createObjectURL(new Blob([await (await fetchChecked(url)).arrayBuffer()], { type }));
 }
 const MODEL_URL = abs(`models/xuantian_02.onnx?rev=${REV}`);
-// 面积差分析头。它**只服务复盘右条那一个读数**：不进搜索、不进 think()，
-// 所以加载失败绝不能连累对弈 —— areaNet 保持 null，复盘只有右条空着（读数写"—"），左条照常。
-const AREA_URL = abs(`models/area_v1.onnx?rev=${REV}`);
 const DEPS = [abs(`ort/ort.wasm.min.js?rev=${REV}`), abs(`siege_engine.js?rev=${REV}`), abs(`nn_ai.js?rev=${REV}`)];
 
 const send = (m) => self.postMessage(m);
@@ -82,8 +80,6 @@ const TIERS = [
 ];
 
 let net = null;
-let areaNet = null;        // 面积差分析头（可为 null：缺它只影响复盘右条，不影响对弈）
-let areaError = null;
 let plan = TIERS[TIERS.length - 1];
 let initPromise = null;
 let initFailed = false;
@@ -115,20 +111,6 @@ async function init() {
     });
     net = NN.createOrtNet(ort, session);
 
-    // 分析头单独兜错：404 / 托管端 MIME / 内存不够都只记一条原因，绝不把对弈档一起拖成 failed。
-    try {
-        const abuf = await (await fetchChecked(AREA_URL)).arrayBuffer();
-        if (abuf.byteLength < 1e6) throw new Error('分析模型文件异常 ' + abuf.byteLength);
-        const asession = await ort.InferenceSession.create(abuf, {
-            graphOptimizationLevel: 'all',
-            executionProviders: ['wasm']
-        });
-        areaNet = NN.createOrtNet(ort, asession);
-    } catch (err) {
-        areaNet = null;
-        areaError = (err && err.message) || String(err);
-    }
-
     // 标定：跑一次短搜索，用模块自己上报的 sims/ms 反推真实 ms/访问（含树与安全网开销）
     const st = E.newGame();
     st.currentPlayer = 1;
@@ -142,8 +124,7 @@ async function init() {
     send({
         type: 'status', phase: 'ready',
         info: { tier: plan.name, msPerSim: +msPerSim.toFixed(2), budgetMs: plan.budgetMs,
-                simsMax: plan.simsMax, threads, isolated, initMs: Date.now() - t0, mobile: MOBILE,
-                area: areaNet ? 'ok' : areaError }
+                simsMax: plan.simsMax, threads, isolated, initMs: Date.now() - t0, mobile: MOBILE }
     });
 }
 
@@ -177,9 +158,19 @@ async function think(state, id) {
  *     走后那一帧是兑现之后的局面，台阶就是那份差价。要抹掉只能换成"最好可达"口径（本轮已否决）。
  */
 const REPLAY = { budgetMs: 900, simsMax: 400, topK: 3, cPuct: 1.5 };   // 当前帧首选：这个必须留树，它答的是"棋"不是"形势"
-const AREA_CELLS = 49;   // diff 口径 = 面积差/49 ⇒ 乘回来才是格数（标签满幅实测 ±47，见 §50.2）
 
-// 一帧的网络读数：pw=胜率(0..1，行棋方视角)，ac=期望最终面积差(格，正=行棋方多)。缺哪个给 null。
+/*
+ * 规则面积差（3.1.15 起取代面积分析头）：口径与判定都在 siege_engine 的 areaRaceDiff 里
+ * （每格判给「BFS 步数更少」的一方，取差；单位=格，正=视角方多；与训练编码 plane 9 同一套邻接）。
+ * 为什么不用网络：gen008C 那个面积头跑满 20 轮最好的 R² 只有 +0.064、MAE 12.6 格，而这条免费规则
+ * 在同一份数据上与终局面积差的 r=0.275（R²≈0.076）—— 训练它花的钱买不到比它更多的信息。
+ * （代价照旧：中盘的终局面积差本身由之后 20+ 次落墙决定，任何"静态"读数都只能解释一小部分，见 §50/§54。）
+ */
+// 薄封装（不写成 `const ruleAreaDiff = E.areaRaceDiff`）：依赖没挂载时 E 是 undefined，
+// 模块作用域上直接取属性会让整个 Worker 静默死在脚本求值阶段 —— 那正是本文件从头防的那类故障。
+function ruleAreaDiff(state, p) { return E.areaRaceDiff(state, p); }
+
+// 一帧的网络读数：pw=胜率(0..1，行棋方视角)，ac=规则面积差(格，正=行棋方多)。pw 缺 ⇒ null。
 async function netReadouts(state, p, rootV) {
     let v = rootV;
     if (!Number.isFinite(v)) {
@@ -189,12 +180,7 @@ async function netReadouts(state, p, rootV) {
     }
     const pw = Number.isFinite(v) ? Math.min(1, Math.max(0, (v + 1) / 2)) : null;
     let ac = null;
-    if (areaNet) {
-        try {
-            const av = await areaNet.evaluate(state, p);
-            if (Number.isFinite(av.v)) ac = Math.min(1, Math.max(-1, av.v)) * AREA_CELLS;
-        } catch (err) { /* 单帧评估失败不打断整局判读：这帧 ac 留空，面板写"未定"，不编数 */ }
-    }
+    try { ac = ruleAreaDiff(state, p); } catch (err) { /* 单帧算失败不打断整局判读：这帧 ac 留空，面板写"未定"，不编数 */ }
     return { pw, ac };
 }
 
@@ -241,17 +227,16 @@ async function runAnalyze(states, id) {
  * 整局搜索判读（第二遍）：静态判读先秒出整条线，这一遍在后台逐帧跑一棵 400 访问的树，
  * 把读数替换成"搜索认为的期望"——
  *   胜率 = 根节点访问加权的 Q：V_root = Σ N(s,a)·Q(s,a) / Σ N(s,a)，再 (V+1)/2；
- *   面积 = 同一访问分布下，每个根候选走一步后面积头前向的加权和（面积头只出前向、不建自己的树）。
+ *   面积 = 同一访问分布下，每个根候选走一步后规则归属差的加权和（纯图运算，一次两 BFS）。
  * 只服务复盘折线/形势条，不参与对弈；终局帧跳过（真值已经在 values 里）。
  */
 async function areaAfter(state, p, action) {
     try {
         const s = E.cloneState(state);
         E.applyAction(s, p, action);
-        // 必须在 child 自己的行棋方视角下评：训练编码里"视角方=行棋方"（无回合平面），
-        // 从根方视角评等于白送一个 tempo、读数系统性偏正。零和恒等式取负换回根方视角。
-        const av = await areaNet.evaluate(s, s.currentPlayer);
-        return Number.isFinite(av.v) ? -Math.min(1, Math.max(-1, av.v)) * AREA_CELLS : null;
+        // 必须在 child 自己的行棋方视角下算：根方刚走完这一手，child 的行棋方是对手，
+        // 从根方视角算等于白送一个 tempo、读数系统性偏正。零和恒等式取负换回根方视角。
+        return -ruleAreaDiff(s, s.currentPlayer);
     } catch (err) { return null; }
 }
 
@@ -263,22 +248,20 @@ async function searchFrame(state) {
     if (!r || !r.meta) return null;
     const m = r.meta;
     if (m.solved) {
-        // 规则判定帧：胜率是判定值不是估计；面积给"被迫那一手走完后"的前向
+        // 规则判定帧：胜率是判定值不是估计；面积给"被迫那一手走完后"的规则归属差
         return { pw: m.solved > 0 ? 1 : 0,
-                 ac: areaNet && m.bestAction != null ? await areaAfter(state, p, m.bestAction) : null,
+                 ac: m.bestAction != null ? await areaAfter(state, p, m.bestAction) : null,
                  solved: m.solved, searched: true };
     }
     const dist = m.rootDist || [];
     const tot = dist.reduce((s, x) => s + x.n, 0);
     if (!tot) return null;
-    let vWin = 0, vArea = 0, hasArea = !!areaNet;
+    let vWin = 0, vArea = 0, hasArea = true;
     for (const x of dist) {
         const w = x.n / tot;
         vWin += w * x.q;
-        if (hasArea) {
-            const a = await areaAfter(state, p, x.a);
-            if (a === null) hasArea = false; else vArea += w * a;
-        }
+        const a = await areaAfter(state, p, x.a);
+        if (a === null) hasArea = false; else vArea += w * a;
     }
     return { pw: (vWin + 1) / 2, ac: hasArea ? vArea : null, searched: true };
 }
