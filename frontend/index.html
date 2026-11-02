@@ -2956,6 +2956,8 @@ self.onmessage = function(e) {
         const last = s.frames[s.frames.length - 1];
         if (last && last.key === key) return;
         const e = simSlot(key);
+        // 模拟走到终局：裁决当场就能算出来，别等 Worker 回信再把形势条点亮（真实线那侧同理，见 seedTerminalFrames）
+        if (state.gameOver && (!e.v || !e.v.over)) e.v = termValue(state);
         s.frames.push({ state, key, sim: true, move: prev ? describeMove(prev.state, state) : null });
         s.values.push(e.v);
         s.sugs.push(e.sug);
@@ -3159,8 +3161,20 @@ self.onmessage = function(e) {
         drawCurve();
     }
 
+    // 终局那一帧的裁决：双方各自面积 + 胜负。面积在 applyReplayFrame 里已按这一帧的墙算好，直接读，别再 BFS
+    function rpEndText() {
+        const s0 = game.players[0].regionSize, s1 = game.players[1].regionSize;
+        const w = game.winner;
+        if (w === 'draw' || w === null || w === undefined) return '平局 · 区域 ' + s0 + ' vs ' + s1;
+        return (w === 0 ? '红方' : '蓝方') + '获胜 · 区域 ' + (w === 0 ? s0 : s1) + ' vs ' + (w === 0 ? s1 : s0);
+    }
+
     function rpStatusText() {
         const s = replay.sim, f = tapeFrame(replay.idx);
+        if (f && f.state.gameOver) {          // 终局那一帧（真的或模拟的）优先报裁决，别再说"某某行棋"
+            // 状态行是个定宽胶囊，后缀的按键提示会被省略号吃掉——裁决才是这一帧要说的正事
+            return (f.sim ? '🕹 模拟终局 · ' : '🔍 复盘终局 · ') + rpEndText();
+        }
         if (!s.on) return '🔍 复盘第 ' + (replay.idx + 1) + ' 手 · 操作键已停用（Esc 退出）';
         const who = f ? (f.state.currentPlayer === 0 ? '红方' : '蓝方') : '';
         return simAtEnd()
@@ -3248,13 +3262,17 @@ self.onmessage = function(e) {
     }
 
     // 终局帧的胜负与面积就写在局面里，不必问模型（进入复盘第一眼停在终局帧，等整局判读跑到那儿才出读数很难看）
+    function termValue(st) {
+        const w = st.winner;
+        const solved = (w === 0 || w === 1) ? (w === st.currentPlayer ? 1 : -1) : 0;
+        return { solved, over: true, rc: rpAreaDiff(st) };
+    }
+
     function seedTerminalFrames() {
         for (let k = 0; k < replay.frames.length; k++) {
             const st = replay.frames[k].state;
             if (!st.gameOver) continue;
-            const w = st.winner;
-            const solved = (w === 0 || w === 1) ? (w === st.currentPlayer ? 1 : -1) : 0;
-            replay.values[k] = { solved, over: true, rc: rpAreaDiff(st) };
+            replay.values[k] = termValue(st);
         }
     }
 
@@ -3403,7 +3421,9 @@ self.onmessage = function(e) {
         const cur = tapeFrame(replay.idx);
         if (cur && cur.state.gameOver) {
             rpSugHead.textContent = NN_NAME + ' 首选';
-            rpMoves.textContent = '这一帧棋已经终局，没有下一手可评；点「上一手」看模型怎么选。';
+            rpMoves.textContent = cur.sim
+                ? '模拟到这一手已经终局，没有下一手可评；点「上一手」撤回这手接着试。'
+                : '这一帧棋已经终局，没有下一手可评；点「上一手」看模型怎么选。';
             return;
         }
         if (!suggestionsFresh()) {
@@ -3495,10 +3515,12 @@ self.onmessage = function(e) {
         // 尾巴空着且停在分叉点：「下一手」就是本局实战的那一步；有尾巴时末端之后确实没有更新的局面可看
         const backToReal = s.on && !s.frames.length && k < replay.frames.length - 1;
         rpNext.disabled = k < t - 1 ? false : !backToReal;
-        rpNext.textContent = backToReal ? '回到本局实战 ▶' : '下一手 ▶';
+        rpNext.textContent = backToReal ? '回到本局 ▶' : '下一手 ▶';
         if (rpSim) rpSim.classList.toggle('best', s.on);
         if (lgWrSwatch) lgWrSwatch.style.borderTopColor = RP_COLORS[replay.selfIdx];
-        rpActual.textContent = (hyp ? (f.state.gameOver ? '模拟终局：' : '模拟着法：') : '本局实际：') + fmtMove(f && f.move);
+        // 终局这一行给裁决（双方面积 + 胜负）而不是给最后一手 —— 那一手在盘上看得见，读数行只有两行高
+        rpActual.textContent = (hyp ? (f.state.gameOver ? '模拟终局：' : '模拟着法：') : '本局实际：') +
+            (f && f.state.gameOver ? rpEndText() : fmtMove(f && f.move));
         [rpSugHead, rpActual, rpNext].forEach(el => { el.title = el.textContent || ''; });
         rpViewRed.classList.toggle('best', replay.selfIdx === 0);
         rpViewBlue.classList.toggle('best', replay.selfIdx === 1);
