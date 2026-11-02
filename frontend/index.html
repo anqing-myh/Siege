@@ -593,6 +593,7 @@
                 <button class="rp-btn" id="rpNext">下一手 ▶</button>
                 <button class="rp-btn" id="rpFirst">开局</button>
                 <button class="rp-btn" id="rpLast">终局</button>
+                <button class="rp-btn" id="rpSim" title="从当前这一帧开始自己试着往下走">模拟着法</button>
             </div>
             <div class="rp-curve-wrap">
                 <div class="rp-legend" id="rpLegend">
@@ -679,8 +680,8 @@
 
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出
-        <br>版本信息：Version 3.1.15 2026-11-01  感谢游玩~
+        <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
+        <br>版本信息：Version 3.1.16 2026-11-02  感谢游玩~
     </div>
 </div>
 <script>
@@ -2206,6 +2207,7 @@ self.onmessage = function(e) {
 
     // ---- 是否允许当前玩家操作 ----
     function canOperate() {
+        if (replay.sim.on) return simAtEnd();   // 模拟着法：红蓝都由人走，所以不看本地玩家、也不看行棋方是谁
         if (replay.active) return false;
         if (game.gameOver) return false;
         if (game.mode === 'pve') return game.currentPlayer === 0 && !game.aiThinking;
@@ -2312,7 +2314,7 @@ self.onmessage = function(e) {
             else game.winner = 'draw';
             game.players[0].regionSize = s0;
             game.players[1].regionSize = s1;
-            if (!game.resultRecorded) {
+            if (!game.resultRecorded && !replay.active) {   // 复盘/模拟里走到终局不是战绩，且不置位：真实结果退出后仍只记一次
                 recordGameResult();
                 game.resultRecorded = true;
             }
@@ -2345,8 +2347,8 @@ self.onmessage = function(e) {
             }
         }
         // 高亮可移动格子
-        if (game.phase === 'move' && !game.gameOver && !replay.active) {
-            const isAiTurn = game.mode === 'pve' && game.currentPlayer === 1;
+        if (game.phase === 'move' && !game.gameOver && (!replay.active || simAtEnd())) {
+            const isAiTurn = !replay.sim.on && game.mode === 'pve' && game.currentPlayer === 1;
             if (!isAiTurn) {
                 const p = game.currentPlayer;
                 const pl = game.players[p];
@@ -2670,6 +2672,7 @@ self.onmessage = function(e) {
         replay.values = [];
         replay.idx = 0;
         replay.sug = null;
+        resetSim();                         // 新开局：模拟尾巴连同它的缓存都是上一个局面的事
         replay.seq++;
         recordReplayFrame();
 
@@ -2774,7 +2777,7 @@ self.onmessage = function(e) {
         const over = checkGameOver();
         drawBoard();
         if (over) {
-            if (game.mode === 'pve') {
+            if (game.mode === 'pve' && !replay.active) {
                 if (game.winner === 0) playWinSound();
                 else if (game.winner === 1) playLoseSound();
             }
@@ -2813,7 +2816,7 @@ self.onmessage = function(e) {
         recordReplayFrame();
         updateUI();
         drawBoard();
-        if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver) {
+        if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver && !replay.active) {
             setTimeout(() => aiTurn(), 100);
         }
     }
@@ -2848,7 +2851,8 @@ self.onmessage = function(e) {
         'lost-save-area': '必败，选择面积最大的一手',
         'pathfix': '搜索线路重建失败，取候选第一手'
     };
-    const replay = { active: false, frames: [], values: [], sugs: [], idx: 0, saved: null, selfIdx: 0, sug: null, sugFrame: -1, pick: 0, seq: 0, analyzeJob: 0 };
+    const replay = { active: false, frames: [], values: [], sugs: [], idx: 0, saved: null, selfIdx: 0, sug: null, sugFrame: -1, pick: 0, seq: 0, analyzeJob: 0, searchDone: true,
+        sim: { on: false, branch: 0, frames: [], values: [], sugs: [], cache: new Map() } };
 
     const wrBarEl = document.getElementById('wrBar');
     const areaBarEl = document.getElementById('areaBar');
@@ -2864,12 +2868,36 @@ self.onmessage = function(e) {
     const rpRetry = document.getElementById('rpRetry');
     const rpPrev = document.getElementById('rpPrev');
     const rpNext = document.getElementById('rpNext');
+    const rpSim = document.getElementById('rpSim');
     const rpFirst = document.getElementById('rpFirst');
     const rpLast = document.getElementById('rpLast');
     const rpExit = document.getElementById('rpExit');
     const rpViewRed = document.getElementById('rpViewRed');
     const rpViewBlue = document.getElementById('rpViewBlue');
     const analyzeBtn = document.getElementById('analyzeBtn');
+
+    /*
+     * 磁带 = 真实前缀 frames[0..sim.branch] + 模拟尾巴 sim.frames。
+     * 真实帧数组永不变长：整局判读是按绝对帧号写 replay.values 的，把尾巴混进去那条通道会到处漏，
+     * 所以尾巴另存一份，读的地方统一走下面这几个访问器。
+     * 尾巴为空时磁带就是整局（分叉点跟着游标走，见 gotoFrame）：一开开关不该把后面的实战着法藏掉。
+     */
+    function tapeLen() { const s = replay.sim; return s.frames.length ? s.branch + 1 + s.frames.length : replay.frames.length; }
+    function tapeFrame(k) { const s = replay.sim; return s.frames.length && k > s.branch ? s.frames[k - s.branch - 1] : replay.frames[k]; }
+    function tapeValue(k) { const s = replay.sim; return s.frames.length && k > s.branch ? s.values[k - s.branch - 1] : replay.values[k]; }
+    function tapeSetValue(k, v) { const s = replay.sim; if (s.frames.length && k > s.branch) s.values[k - s.branch - 1] = v; else replay.values[k] = v; }
+    function tapeSug(k) { const s = replay.sim; return s.frames.length && k > s.branch ? s.sugs[k - s.branch - 1] : replay.sugs[k]; }
+    function tapeSetSug(k, v) { const s = replay.sim; if (s.frames.length && k > s.branch) s.sugs[k - s.branch - 1] = v; else replay.sugs[k] = v; }
+    // 能落子的位置 = 分叉点本身（还没走出尾巴）或尾巴最末端。尾巴中间要续走就得分支，那不是本功能要的
+    function simAtEnd() { const s = replay.sim; return replay.active && s.on && (!s.frames.length || replay.idx === tapeLen() - 1); }
+
+    // 关掉模拟 = 尾巴清空、磁带退回整局；cache 留着（同一局面重开不必再问 Worker）
+    function resetSim(keepCache) {
+        const s = replay.sim;
+        s.on = false; s.frames = []; s.values = []; s.sugs = [];
+        s.branch = Math.max(0, replay.frames.length - 1);
+        if (!keepCache) s.cache.clear();
+    }
 
     // 帧里只留规则引擎看得懂的东西 + 展示要用的标记；这份对象会被原样发给 Worker 做特征
     function replayShot() {
@@ -2894,7 +2922,7 @@ self.onmessage = function(e) {
      * 中途态不能各算一手 —— 判据是"轮到谁变了"或"终局标记变了"，再用状态 key 去掉重复。
      */
     function recordReplayFrame() {
-        if (replay.active) return;
+        if (replay.active) { if (replay.sim.on) pushSimFrame(); return; }
         if (!game.board || !game.board.length) return;
         const state = replayShot();
         const key = getStateKey(state, state.currentPlayer);
@@ -2905,6 +2933,126 @@ self.onmessage = function(e) {
             last.move = describeMove(last.state, state);
         }
         replay.frames.push({ state, key, move: null });
+    }
+
+    /*
+     * 模拟尾巴推进：走到新的一手就长出一帧假设局面。
+     * 着法记在这一帧自己身上（= 走到这儿的那一手），不能像 recordReplayFrame 那样写回上一帧 ——
+     * 分叉点那一帧的 move 是"本局实际"的唯一来源，覆写掉就没得对照了。
+     */
+    function pushSimFrame() {
+        const s = replay.sim;
+        const prev = tapeFrame(replay.idx);
+        const state = replayShot();
+        const key = getStateKey(state, state.currentPlayer);
+        const last = s.frames[s.frames.length - 1];
+        if (last && last.key === key) return;
+        const e = simSlot(key);
+        s.frames.push({ state, key, sim: true, move: prev ? describeMove(prev.state, state) : null });
+        s.values.push(e.v);
+        s.sugs.push(e.sug);
+        applyReplayFrame(tapeLen() - 1);      // 先复位成干净的回合起点（自带 seq++），再判读
+        ensureSimEval(s.frames.length - 1);
+    }
+
+    // 同一局面（连行棋方一起算）的读数就是同一个数：缓存里没有就去真实线里找那一手
+    function simSlot(key) {
+        const s = replay.sim;
+        let e = s.cache.get(key);
+        if (e) return e;
+        e = { v: null, sug: null };
+        for (let k = 0; k < replay.frames.length; k++) {
+            if (replay.frames[k].key !== key) continue;
+            // {failed} 那颗是"这一帧没算出来"，不是读数，捡回来只会把假设线画成断点
+            if (!e.v && replay.values[k] && !replay.values[k].failed) e.v = replay.values[k];
+            if (!e.sug && replay.sugs[k]) e.sug = replay.sugs[k];
+        }
+        s.cache.set(key, e);
+        return e;
+    }
+
+    // 真实线里算出来的读数顺手同步进缓存，否则用户重走同一局面时缓存会给出一颗更旧的静态数
+    function simSync(key, v, sug) {
+        const e = replay.sim.cache.get(key);
+        if (!e) return;
+        if (v) e.v = v;
+        if (sug) e.sug = sug;
+    }
+
+    /*
+     * 每个新模拟局面都走一遍整局复盘的那两阶段：静态 value 立刻上形势条，随后 400 访问的搜索读数把它刷掉。
+     * 回调捕获 (尾巴下标, key, seq)：写缓存无条件（撤回的功课留着复用），刷画面要看局面还在不在原位。
+     */
+    function ensureSimEval(j) {
+        const s = replay.sim, f = s.frames[j];
+        if (!f || nnDisabled) return;
+        const e = s.cache.get(f.key);
+        if (!e) return;
+        const key = f.key, seq = replay.seq;
+        const put = (patch) => {
+            e.v = Object.assign({}, e.v, patch);
+            const cur = s.frames[j];
+            if (!cur || cur.key !== key) return;    // 这一格已经不是那个局面：分叉点动过，写进去会串台
+            tapeSetValue(s.branch + 1 + j, e.v);
+            if (seq === replay.seq) { drawBars(); drawCurve(); }
+        };
+        // 读数是一帧一条 partial 回流的那个形状，done 那条只有 {done:true}：必须挂 onPartial，
+        // 光 .then(m => m.value) 会永远拿到 undefined（Promise 在 done 上才结，那里没值）
+        const onMsg = (m) => { if (m && m.value) put(m.value); };
+        const have = e.v;
+        // 命中缓存 = 静态读数一眼就有，一个 Worker 任务都不发；只有"搜索遍还没跑过这一帧"的半份缓存才补第二遍。
+        // failed 是算失败不是读数，不当命中。
+        if (have && !have.failed) {
+            if (have.searched || have.over) return;
+            nnAsk('searchAnalyze', [f.state], 60000, onMsg).catch(() => {});
+            return;
+        }
+        nnAsk('analyze', [f.state], 30000, onMsg).catch(() => {});
+        nnAsk('searchAnalyze', [f.state], 60000, onMsg).catch(() => {});
+    }
+
+    // 「上一手」停在磁带末端 = 悔棋（真删最后一手模拟）；落在尾巴中间 = 普通浏览，往前翻那些手还在
+    function popSim() {
+        const s = replay.sim;
+        s.frames.pop(); s.values.pop(); s.sugs.pop();
+        // 撤回最后一条假设 = 尾巴空了，磁带重新变回整局，游标该落回分叉点而不是真实终局
+        applyReplayFrame(s.frames.length ? tapeLen() - 1 : s.branch);
+    }
+
+    function stepPrev() {
+        if (simAtEnd() && replay.sim.frames.length) popSim();
+        else gotoFrame(replay.idx - 1);
+    }
+
+    // 尾巴空着时磁带就是整局，「下一手」往前挪一格 = 分叉点跟着挪（gotoFrame 里写），
+    // 到了真实终局就没了；尾巴非空时往前翻只是浏览假设线，分叉点不动
+    function stepNext() { gotoFrame(replay.idx + 1); }
+
+    // 「终局」= 磁带最末端：有模拟尾巴就是最后一个假设局面，没尾巴就退回本局实战的最后一帧
+    function gotoLast() { gotoFrame(tapeLen() - 1); }
+
+    function resumeSearchPass() {
+        if (replay.searchDone || nnDisabled || !replay.frames.length) return;
+        replay.searchDone = false;
+        startSearchPass(replay.frames.map(f => f.state), ++replay.analyzeJob);
+    }
+
+    function toggleSim() {
+        const s = replay.sim;
+        if (s.on) {
+            const a = s.branch;
+            resetSim(true);
+            resumeSearchPass();                 // 整局搜索线补回来，别让真实帧永远停在静态读数
+            gotoFrame(a);
+            return;
+        }
+        resetSim(true);                         // 上一条尾巴作废，锚点重定到当前这一帧
+        s.branch = replay.idx;
+        s.on = true;
+        replay.analyzeJob++;                    // 整局后台搜索让路：模拟时不想要折线在脚下偷偷变
+        replay.searchDone = false;
+        if (rpRetry) rpRetry.style.display = '';
+        applyReplayFrame(replay.idx);           // 棋盘高亮、状态行、按钮文案跟着这次切换重画
     }
 
     // 两帧做差 = 这一手干了什么（三种模式通用，不用在每个落子点各写一遍文案）
@@ -2948,7 +3096,7 @@ self.onmessage = function(e) {
     // 帧存的是"本帧行棋方"的读数（网络胜率 + 规则面积差），翻成己方视角：胜率镜像 1-wr，面积差镜像取相反数。
     // 两条各自独立：网络那一头没给读数时左条空着（pw=null），不影响右条照常显示规则面积差。
     function selfView(k) {
-        const a = replay.values[k], f = replay.frames[k];
+        const a = tapeValue(k), f = tapeFrame(k);
         if (!a || !f) return null;
         let wr = null, cells = null, certain = false, over = false;
         if (a.over) {                         // 这帧就是终局：胜负与面积差都写在局面里，不是估计
@@ -2970,7 +3118,7 @@ self.onmessage = function(e) {
     }
 
     function applyReplayFrame(k) {
-        const f = replay.frames[k];
+        const f = tapeFrame(k);
         if (!f) return;
         replay.idx = k;
         game.board = JSON.parse(JSON.stringify(f.state.board));
@@ -2996,16 +3144,28 @@ self.onmessage = function(e) {
         if (!f.state.gameOver) requestSuggestion(f.state);
         updateUI();
         // 状态栏本来是写给"正在下的这盘"的，复盘里照抄会让人以为还能接着下
-        statusMessage.textContent = '🔍 复盘第 ' + (k + 1) + ' 手 · 操作键已停用（Esc 退出）';
+        statusMessage.textContent = rpStatusText();
         drawBoard();
         renderReplayPanel();
         drawBars();
         drawCurve();
     }
 
+    function rpStatusText() {
+        const s = replay.sim, f = tapeFrame(replay.idx);
+        if (!s.on) return '🔍 复盘第 ' + (replay.idx + 1) + ' 手 · 操作键已停用（Esc 退出）';
+        const who = f ? (f.state.currentPlayer === 0 ? '红方' : '蓝方') : '';
+        return simAtEnd()
+            ? '🕹 模拟中 · 第 ' + (replay.idx + 1) + ' 手 · ' + who + '行棋（方向键翻手，← 悔棋，Esc 退出）'
+            : '🕹 浏览模拟线 · 第 ' + (replay.idx + 1) + ' 手 · 翻到最新一手才能续走';
+    }
+
     function gotoFrame(k) {
         if (!replay.frames.length) return;
-        applyReplayFrame(Math.max(0, Math.min(replay.frames.length - 1, k)));
+        const kk = Math.max(0, Math.min(tapeLen() - 1, k));
+        // 还没走出假设线时磁带就是整局：翻到哪儿，分叉点就跟到哪儿，任何一帧都能当场续走
+        if (replay.sim.on && !replay.sim.frames.length) replay.sim.branch = kk;
+        applyReplayFrame(kk);
     }
 
     function enterReplay() {
@@ -3023,6 +3183,7 @@ self.onmessage = function(e) {
             resultRecorded: game.resultRecorded
         };
         replay.active = true;
+        resetSim(true);                                   // 磁带退回整局：上一条模拟尾巴不带进这次复盘
         replay.values = new Array(replay.frames.length).fill(null);
         replay.sugs = new Array(replay.frames.length).fill(null);   // 方案 A：前三选按帧缓存，翻回旧帧不再重算
         replay.selfIdx = (game.mode === 'p2p' && (wsPlayerIndex === 0 || wsPlayerIndex === 1)) ? wsPlayerIndex : 0;
@@ -3041,6 +3202,7 @@ self.onmessage = function(e) {
         replay.active = false;
         replay.seq++;
         replay.analyzeJob++;
+        resetSim(true);                                   // 模拟线只活在这次复盘里：退出即散，棋盘由 replay.saved 还原
         const s = replay.saved;
         replay.saved = null;
         if (s) {
@@ -3093,6 +3255,7 @@ self.onmessage = function(e) {
     function refreshAnalysis() {
         if (!replay.frames.length) return;
         const job = ++replay.analyzeJob;
+        replay.searchDone = false;
         rpRetry.style.display = 'none';
         replay.values = new Array(replay.frames.length).fill(null);
         seedTerminalFrames();
@@ -3105,7 +3268,10 @@ self.onmessage = function(e) {
         // 整局判读的生命周期跟"这次任务"走，不跟 replay.seq 走：seq 每翻一手就 +1，
         // 拿它当作废条件会让后面所有帧的回流被丢掉，进度条永远停在用户第一次翻页时的那一格。
         const onPartial = (msg) => {
-            if (msg.index >= 0 && msg.index < replay.values.length) replay.values[msg.index] = msg.value;
+            if (msg.index >= 0 && msg.index < replay.values.length) {
+                replay.values[msg.index] = msg.value;
+                simSync(replay.frames[msg.index].key, msg.value, null);
+            }
             got++;
             if (job !== replay.analyzeJob || !replay.active) return;
             setSub('整局判读 ' + got + '/' + states.length + '…');
@@ -3137,10 +3303,12 @@ self.onmessage = function(e) {
             if (job !== replay.analyzeJob || !replay.active) return;
             if (msg.index < 0 || msg.index >= replay.values.length || !msg.value) return;
             replay.values[msg.index] = Object.assign({}, replay.values[msg.index], msg.value);
+            simSync(replay.frames[msg.index].key, replay.values[msg.index], null);
             drawBars();
             drawCurve();
         }).then(() => {
             if (job !== replay.analyzeJob || !replay.active) return;
+            replay.searchDone = true;
             drawBars();
             drawCurve();
         }).catch(() => {});
@@ -3155,8 +3323,8 @@ self.onmessage = function(e) {
             rpSugHead.textContent = NN_NAME + ' 首选';
             return;
         }
-        if (replay.sugs[k]) {                       // 缓存命中：同一帧同一模型，结果确定，直接用
-            replay.sug = replay.sugs[k];
+        if (tapeSug(k)) {                           // 缓存命中：同一局面同一模型，结果确定，直接用
+            replay.sug = tapeSug(k);
             replay.sugFrame = k;
             replay.pick = 0;
             renderReplayPanel();
@@ -3166,7 +3334,8 @@ self.onmessage = function(e) {
         }
         // 不写"本手评估中…"清空旧行：上一帧的结果留着，新结果算好后整块替换（避免闪空白 + 高度跳动）
         nnAsk('suggest', state, 20000).then(msg => {
-            replay.sugs[k] = msg;                   // 无论用户是否已翻走，都存进缓存（翻回来时秒出）
+            tapeSetSug(k, msg);                     // 无论用户是否已翻走，都存进缓存（翻回来时秒出）
+            simSync(getStateKey(state, state.currentPlayer), null, msg);
             if (seq !== replay.seq) return;         // 但只有还停在这一帧时才刷新画面
             replay.sug = msg;
             replay.sugFrame = k;
@@ -3174,11 +3343,13 @@ self.onmessage = function(e) {
             // 本手这一搜顺带出的网络读数，直接当第 k 帧的读数用（整局折线随后独立再算一遍）。
             // 但搜索遍（searched）已经替换过的帧不许被这里的静态读数盖回去——搜索口径更准
             const m = msg.meta;
-            const cur = replay.values[k];
-            if (!(cur && cur.searched) && m && (m.solved || Number.isFinite(m.pw) || Number.isFinite(m.ac)))
+            const cur = tapeValue(k);
+            if (!(cur && cur.searched) && m && (m.solved || Number.isFinite(m.pw) || Number.isFinite(m.ac))) {
                 // 合并而不是整块替换：整局判读先回来的那一帧带着 over/rc（终局真值），不能被这搜的预报值冲掉
-                replay.values[k] = Object.assign({}, replay.values[k],
-                    { solved: m.solved || 0, pw: m.pw, ac: m.ac });
+                const merged = Object.assign({}, cur, { solved: m.solved || 0, pw: m.pw, ac: m.ac });
+                tapeSetValue(k, merged);
+                simSync(getStateKey(state, state.currentPlayer), merged, null);
+            }
             renderReplayPanel();      // 内含 renderSuggestions + drawCurve
             drawBoard();
             drawBars();
@@ -3221,7 +3392,7 @@ self.onmessage = function(e) {
 
     function renderSuggestions() {
         if (!rpMoves) return;
-        const cur = replay.frames[replay.idx];
+        const cur = tapeFrame(replay.idx);
         if (cur && cur.state.gameOver) {
             rpSugHead.textContent = NN_NAME + ' 首选';
             rpMoves.textContent = '这一帧棋已经终局，没有下一手可评；点「上一手」看模型怎么选。';
@@ -3265,8 +3436,11 @@ self.onmessage = function(e) {
         }
         rpSugHead.textContent = NN_NAME + ' 首选' +
             (meta.top[0].ruled ? ' · 规则判定' : sugParams(meta));
-        const f = replay.frames[replay.idx];
-        const actualId = f && f.move ? moveActionId(f.move) : -1;
+        const f = tapeFrame(replay.idx);
+        // 真实帧的 move = 本局在这一手走了什么；模拟帧的 move 是"走到这一帧的那一手"，所以假设线上的"这一手"要看下一帧
+        const nx = tapeFrame(replay.idx + 1);
+        const mv = f && f.sim ? (nx && nx.sim ? nx.move : null) : (f && f.move);
+        const actualId = mv ? moveActionId(mv) : -1;
         const MARKS = '①②③④⑤';
         if (!meta.top[replay.pick]) replay.pick = 0;
         meta.top.forEach((t, i) => {
@@ -3285,7 +3459,7 @@ self.onmessage = function(e) {
                       ' · 预测价值' + (t.q >= 0 ? '+' : '') + t.q.toFixed(2) +
                       ' · 先验' + t.p.toFixed(2)) +
                 (i === replay.pick ? ' ◀棋盘显示' : '') +
-                (t.a === actualId ? ' ✓本局实际' : '');
+                (t.a === actualId ? (f && f.sim ? ' ✓我走的这手' : ' ✓本局实际') : '');
             d.addEventListener('click', () => {
                 replay.pick = i;
                 renderSuggestions();
@@ -3304,14 +3478,20 @@ self.onmessage = function(e) {
 
     function renderReplayPanel() {
         if (!rpPanel || !replay.active) return;
-        const n = replay.frames.length, k = replay.idx;
-        const f = replay.frames[k];
-        rpFrameNo.textContent = '第 ' + (k + 1) + ' / ' + n + ' 手';
+        const s = replay.sim, t = tapeLen(), n = Math.max(t, replay.frames.length), k = replay.idx;
+        const f = tapeFrame(k);
+        const hyp = f && f.sim ? k - s.branch : 0;
+        // 分母留本局总手数：开开关不该让「共 13 手」突然变成「共 4 手」，尾巴有多深由「假设 +m」说
+        rpFrameNo.textContent = '第 ' + (k + 1) + ' / ' + n + ' 手' + (hyp ? ' · 假设 +' + hyp : '');
         rpPrev.disabled = k <= 0;
-        rpNext.disabled = k >= n - 1;
+        // 尾巴空着且停在分叉点：「下一手」就是本局实战的那一步；有尾巴时末端之后确实没有更新的局面可看
+        const backToReal = s.on && !s.frames.length && k < replay.frames.length - 1;
+        rpNext.disabled = k < t - 1 ? false : !backToReal;
+        rpNext.textContent = backToReal ? '回到本局实战 ▶' : '下一手 ▶';
+        if (rpSim) rpSim.classList.toggle('best', s.on);
         if (lgWrSwatch) lgWrSwatch.style.borderTopColor = RP_COLORS[replay.selfIdx];
-        rpActual.textContent = '本局实际：' + fmtMove(f && f.move);
-        [rpSugHead, rpActual].forEach(el => { el.title = el.textContent || ''; });
+        rpActual.textContent = (hyp ? (f.state.gameOver ? '模拟终局：' : '模拟着法：') : '本局实际：') + fmtMove(f && f.move);
+        [rpSugHead, rpActual, rpNext].forEach(el => { el.title = el.textContent || ''; });
         rpViewRed.classList.toggle('best', replay.selfIdx === 0);
         rpViewBlue.classList.toggle('best', replay.selfIdx === 1);
         renderSuggestions();
@@ -3332,6 +3512,9 @@ self.onmessage = function(e) {
         c.fillStyle = '#fff'; c.fillText(text, w / 2, ty);
     }
 
+    // 当前这一帧是假设出来的（模拟尾巴上的）——形势条与折线都要淡一档，别和本局实际混成一个数
+    function curHyp() { const f = tapeFrame(replay.idx); return !!(f && f.sim); }
+
     // 左条：己方胜率，分界线以下染己方色（100% → 满条，50% → 正中均势线）
     function drawWrBar() {
         if (!wrBarEl || !replay.active) return;
@@ -3340,12 +3523,14 @@ self.onmessage = function(e) {
         barBase(c, w, h);
         const sv = selfView(replay.idx);
         if (!sv || sv.wr === null) return;     // 没有依据就只留底色：半条假色块比空条更坏
+        if (curHyp()) c.globalAlpha = 0.6;
         const y = h * (1 - sv.wr);
         c.fillStyle = RP_COLORS[replay.selfIdx]; c.fillRect(0, y, w, h - y);
         c.fillStyle = RP_COLORS[1 - replay.selfIdx]; c.fillRect(0, 0, w, y);
         c.strokeStyle = '#ffffff'; c.lineWidth = 2;
         c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
         barMark(c, w, h, y, fmtPct(sv.wr));
+        c.globalAlpha = 1;
     }
 
     // 右条：规则归属面积差，发散量纲 —— 中线是 0 格，往上己方多、往下己方少，满条 ±RP_CELL_MAX 格
@@ -3356,6 +3541,7 @@ self.onmessage = function(e) {
         barBase(c, w, h);
         const sv = selfView(replay.idx);
         if (!sv || sv.cells === null) return;
+        if (curHyp()) c.globalAlpha = 0.6;
         const cells = Math.max(-RP_CELL_MAX, Math.min(RP_CELL_MAX, sv.cells));
         const y = zero * (1 - cells / RP_CELL_MAX);
         c.fillStyle = RP_COLORS[cells >= 0 ? replay.selfIdx : 1 - replay.selfIdx];
@@ -3364,6 +3550,7 @@ self.onmessage = function(e) {
         c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
         // 条上只写 "+12.3"（46px 宽放不下 "+12.3格"），单位由读数行与图例说明
         barMark(c, w, h, y, fmtCells(cells));
+        c.globalAlpha = 1;
     }
 
     function drawBars() {
@@ -3380,7 +3567,7 @@ self.onmessage = function(e) {
         // 两个量纲共用这张图：中线同时是"50% 胜率"和"0 格面积差"，所以一条虚线管两条读数
         c.setLineDash([3, 3]); c.strokeStyle = 'rgba(255,255,255,0.3)'; c.lineWidth = 1;
         c.beginPath(); c.moveTo(0, zero); c.lineTo(w, zero); c.stroke(); c.setLineDash([]);
-        const n = replay.frames.length;
+        const n = tapeLen();
         if (n < 2) return;
         const stepX = (w - 2 * pad) / (n - 1);
         const xOf = k => pad + k * stepX;
@@ -3388,10 +3575,10 @@ self.onmessage = function(e) {
         const yOfCells = sv => Number.isFinite(sv.cells)
             ? zero - Math.max(-1, Math.min(1, sv.cells / RP_CELL_MAX)) * (zero - pad) : null;
         // 断点（没判读的帧、或那一条没有读数的帧）不连线：整局判读是逐帧回来的，连过去就成了一条假直线
-        const polyline = (yOf) => {
+        const poly = (yOf, from, to) => {
             c.beginPath();
             let started = false;
-            for (let k = 0; k < n; k++) {
+            for (let k = from; k <= to; k++) {
                 const sv = selfView(k);
                 const y = sv ? yOf(sv) : null;
                 if (y === null) { started = false; continue; }
@@ -3400,11 +3587,25 @@ self.onmessage = function(e) {
             }
             c.stroke();
         };
-        c.setLineDash([5, 3]); c.strokeStyle = '#f0d4a0'; c.lineWidth = 1.2;
-        polyline(yOfCells);
-        c.setLineDash([]);
-        c.strokeStyle = RP_COLORS[replay.selfIdx]; c.lineWidth = 1.6;
-        polyline(yOfWr);
+        // 淡色段只覆盖真·假设帧：尾巴空着时磁带就是整局，分叉点跟着游标走，不能把后面的实战着法画成虚线
+        const lastReal = replay.sim.frames.length ? Math.min(replay.sim.branch, n - 1) : n - 1;
+        const paint = (from, to, alpha, dashWr) => {
+            c.globalAlpha = alpha;
+            c.setLineDash([5, 3]); c.strokeStyle = '#f0d4a0'; c.lineWidth = 1.2;
+            poly(yOfCells, from, to);
+            c.setLineDash(dashWr);
+            c.strokeStyle = RP_COLORS[replay.selfIdx]; c.lineWidth = 1.6;
+            poly(yOfWr, from, to);
+            c.globalAlpha = 1;
+        };
+        paint(0, lastReal, 1, []);
+        if (n - 1 > lastReal) {
+            // 模拟段：从分叉点接出去、淡一档且胜率也改虚线，一眼就知道这段不是本局走过的棋
+            paint(lastReal, n - 1, 0.6, [4, 3]);
+            c.setLineDash([2, 2]); c.strokeStyle = 'rgba(240,212,160,0.75)'; c.lineWidth = 1;
+            c.beginPath(); c.moveTo(xOf(lastReal), 2); c.lineTo(xOf(lastReal), h - 2); c.stroke();
+            c.setLineDash([]);
+        }
         c.strokeStyle = 'rgba(255,255,255,0.6)'; c.lineWidth = 1;
         c.beginPath(); c.moveTo(xOf(replay.idx), 2); c.lineTo(xOf(replay.idx), h - 2); c.stroke();
     }
@@ -3424,7 +3625,7 @@ self.onmessage = function(e) {
 
     // 棋盘叠加：黄格=选中的模型首选落点，行棋方色实线=它要放的墙（本局实际怎么走的不再画到盘上）
     function drawReplayOverlay() {
-        const f = replay.frames[replay.idx];
+        const f = tapeFrame(replay.idx);
         if (!f) return;
         // 面板里留着的可能是上一帧的首选行（新结果还在算）：文字可以留旧，棋盘不能跟着画旧线路
         if (!suggestionsFresh()) return;
@@ -3447,10 +3648,11 @@ self.onmessage = function(e) {
     }
 
     if (analyzeBtn) analyzeBtn.addEventListener('click', enterReplay);
-    if (rpPrev) rpPrev.addEventListener('click', () => gotoFrame(replay.idx - 1));
-    if (rpNext) rpNext.addEventListener('click', () => gotoFrame(replay.idx + 1));
+    if (rpPrev) rpPrev.addEventListener('click', stepPrev);
+    if (rpNext) rpNext.addEventListener('click', stepNext);
     if (rpFirst) rpFirst.addEventListener('click', () => gotoFrame(0));
-    if (rpLast) rpLast.addEventListener('click', () => gotoFrame(replay.frames.length - 1));
+    if (rpLast) rpLast.addEventListener('click', gotoLast);
+    if (rpSim) rpSim.addEventListener('click', toggleSim);
     if (rpExit) rpExit.addEventListener('click', exitReplay);
     if (rpRetry) rpRetry.addEventListener('click', () => {
         if (nnDisabled) {                       // 面板里也能重试一次加载，不用退回难度按钮
@@ -3463,12 +3665,12 @@ self.onmessage = function(e) {
     if (rpViewRed) rpViewRed.addEventListener('click', () => rpSetView(0));
     if (rpViewBlue) rpViewBlue.addEventListener('click', () => rpSetView(1));
     if (rpCurve) rpCurve.addEventListener('click', (e) => {
-        if (!replay.active || replay.frames.length < 2) return;
+        const n = tapeLen();
+        if (!replay.active || n < 2) return;
         const rect = rpCurve.getBoundingClientRect();
         const x = (e.clientX - rect.left) * (rpCurve.width / rect.width);
         const pad = 6;
-        const k = Math.round((x - pad) / ((rpCurve.width - 2 * pad) / (replay.frames.length - 1)));
-        gotoFrame(k);
+        gotoFrame(Math.round((x - pad) / ((rpCurve.width - 2 * pad) / (n - 1))));
     });
 
     // ---- AI ----
@@ -3876,13 +4078,13 @@ self.onmessage = function(e) {
         document.addEventListener('keydown', (e) => {
             if (isTypingInRoomCodeInput(e)) return;
             const key = e.key;
-            if (replay.active) {          // 复盘里键盘只管翻手，不管下棋
-                if (key === 'ArrowLeft') { e.preventDefault(); gotoFrame(replay.idx - 1); }
-                else if (key === 'ArrowRight') { e.preventDefault(); gotoFrame(replay.idx + 1); }
-                else if (key === 'Home') { e.preventDefault(); gotoFrame(0); }
-                else if (key === 'End') { e.preventDefault(); gotoFrame(replay.frames.length - 1); }
-                else if (key === 'Escape') { e.preventDefault(); exitReplay(); }
-                return;
+            if (replay.active) {          // 复盘里键盘只管翻手；开了模拟着法才把 WASD/J/空格/Q 交给棋盘
+                if (key === 'ArrowLeft') { e.preventDefault(); stepPrev(); return; }
+                if (key === 'ArrowRight') { e.preventDefault(); stepNext(); return; }
+                if (key === 'Home') { e.preventDefault(); gotoFrame(0); return; }
+                if (key === 'End') { e.preventDefault(); gotoLast(); return; }
+                if (key === 'Escape') { e.preventDefault(); exitReplay(); return; }
+                if (!replay.sim.on) return;
             }
             if (!canOperate()) return;
             if (key === 'w' || key === 'W' || key === 'ArrowUp') {
@@ -3911,6 +4113,7 @@ self.onmessage = function(e) {
                 e.preventDefault();
                 if (game.phase === 'wall') cancelWall();
             }
+            if (replay.active) statusMessage.textContent = rpStatusText();   // updateUI 把状态行写回"该谁走"了，模拟里盖回来
         });
     }
 
@@ -3984,6 +4187,7 @@ self.onmessage = function(e) {
             } else if (game.phase === 'wall') {
                 handleMobileWallClick(gridY, gridX);
             }
+            if (replay.active) statusMessage.textContent = rpStatusText();
         });
     }
 
