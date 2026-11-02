@@ -371,6 +371,14 @@
             margin: 8px 0;
             flex-wrap: wrap;
         }
+        #analysisPanel .rp-foot {
+            /* 模拟着法 / 退出复盘 同排：折行会把面板顶高一行，按钮也就跟着抖动 ⇒ 这行锁死不折 */
+            flex-wrap: nowrap;
+        }
+        #analysisPanel .rp-foot .rp-btn {
+            white-space: nowrap;
+            padding: 5px 9px;
+        }
         #analysisPanel .rp-val {
             font-size: 15px;
             margin: 6px 0 2px 0;
@@ -593,7 +601,6 @@
                 <button class="rp-btn" id="rpNext">下一手 ▶</button>
                 <button class="rp-btn" id="rpFirst">开局</button>
                 <button class="rp-btn" id="rpLast">终局</button>
-                <button class="rp-btn" id="rpSim" title="从当前这一帧开始自己试着往下走">模拟着法</button>
             </div>
             <div class="rp-curve-wrap">
                 <div class="rp-legend" id="rpLegend">
@@ -602,7 +609,8 @@
                 </div>
                 <canvas id="valueCurve" width="272" height="88"></canvas>
             </div>
-            <div class="rp-nav">
+            <div class="rp-nav rp-foot">
+                <button class="rp-btn" id="rpSim" title="从当前这一帧开始自己试着往下走">模拟着法</button>
                 <button class="rp-btn rp-exit" id="rpExit">退出复盘</button>
                 <button class="rp-btn" id="rpRetry" style="display:none">重试评估</button>
             </div>
