@@ -3512,10 +3512,9 @@ self.onmessage = function(e) {
         // 分母留本局总手数：开开关不该让「共 13 手」突然变成「共 4 手」，尾巴有多深由「假设 +m」说
         rpFrameNo.textContent = '第 ' + (k + 1) + ' / ' + n + ' 手' + (hyp ? ' · 假设 +' + hyp : '');
         rpPrev.disabled = k <= 0;
-        // 尾巴空着且停在分叉点：「下一手」就是本局实战的那一步；有尾巴时末端之后确实没有更新的局面可看
-        const backToReal = s.on && !s.frames.length && k < replay.frames.length - 1;
-        rpNext.disabled = k < t - 1 ? false : !backToReal;
-        rpNext.textContent = backToReal ? '回到本局 ▶' : '下一手 ▶';
+        // 文案永远是「下一手」：能按就说明后面还有局面（尾巴空着时磁带就是整局，走到末端才按不动）
+        rpNext.disabled = k >= t - 1;
+        rpNext.textContent = '下一手 ▶';
         if (rpSim) rpSim.classList.toggle('best', s.on);
         if (lgWrSwatch) lgWrSwatch.style.borderTopColor = RP_COLORS[replay.selfIdx];
         // 终局这一行给裁决（双方面积 + 胜负）而不是给最后一手 —— 那一手在盘上看得见，读数行只有两行高
