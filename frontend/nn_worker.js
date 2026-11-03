@@ -1,12 +1,16 @@
 /*
- * 「通玄」难度档的 Worker：浏览器内 ONNX 推理 + PUCT 搜索。（「通玄」是难度名，模型对外叫 xuantian NN）
- * 对弈权重 models/xuantian_02.onnx = 内部训练产物 gen008B1 = 对外的 xuantian 02（冠军名按代递增）。
+ * NN 难度档的 Worker：浏览器内 ONNX 推理 + PUCT 搜索。（「通玄」「大师」都是难度名，模型另有对外名）
+ * 对弈权重按难度分两份（3.1.18 起），主线程每条对局消息带 play:'master'|'tongxuan' 指定用哪一份：
+ *   通玄 models/xuantian_02.onnx = 内部训练产物 gen008B1 = 对外的 xuantian 02（冠军名按代递增）。
+ *   大师 models/qv_v1.onnx = 内部训练产物 gen013_qv（8 轮）。它没被晋升 ⇒ 按规矩不叫 xuantian，徽章上写「qv」。
+ *   两份都**用到才下**（只点大师不会下那份 19 MB，只点通玄不会下那 4.5 MB），架构相同 ⇒ 标定一次两边共用。
  * 分析权重 models/analysis_v1.onnx = 内部训练产物 gen013_qv16（3.1.17 起）：**只喂复盘读数，不参与对弈**。
  * 复盘右条的面积差读数是**纯规则 BFS 归属**算出来的，网络只管左条的胜率；
  * 面积分析头 models/area_v1.onnx（gen008C）因此**下线但留在仓库里当回滚点**，
  * 没有任何代码引用它 ⇒ 浏览器不会再下载它。
  *
- * 协议：与旧 AI Worker 兼容——收 { state, depth, id }，回 { type:'result', value:{moves,wallDir} }。
+ * 协议：与旧 AI Worker 兼容——收 { state, depth, id, play }，回 { type:'result', value:{moves,wallDir} }。
+ *       play 缺省按 'tongxuan' 处理（旧调用点不必一起改）。
  * 追加：{type:'status', phase:'loading'|'ready'|'failed', info}、{type:'error', message}、
  *       {ping:true} -> {type:'pong', script, deps, loadError}（主线程用它 3 秒内判定 Worker 是否活着）。
  * 复盘：{analyze:true, states:[...], id} -> 每帧一条 {type:'analysis', id, partial:true, index, value}
@@ -18,7 +22,8 @@
  *        solved=+1 表示规则已判定（本帧存在一步制胜的着法，与样本无关）），
  *       全部跑完再补一条 {type:'analysis', id, done:true}；
  *       {suggest:true, state, id} -> {type:'suggestion', id, value, meta}（meta.top = 前 3 着法，
- *       meta.pw/ac 同上一行的口径）。
+ *       meta.pw/ac 同上一行的口径。首选**恒出在冠军那份对弈权重上**，与你这局玩的是哪档无关，
+ *       所以复盘时大师档用户可能第一次触发 19 MB 下载——这与改动前"任何复盘都要下 19 MB"相同）。
  * depth 对本 Worker 无意义（NN 用时间预算），收到后忽略。
  *
  * 自适应：初始化时用一次真实搜索标定 ms/访问，据此选档位（budgetMs / simsMax），
@@ -31,7 +36,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v14';
+const REV = 'v15';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -45,7 +50,10 @@ async function fetchChecked(url) {
 async function toBlobUrl(url, type) {
     return URL.createObjectURL(new Blob([await (await fetchChecked(url)).arrayBuffer()], { type }));
 }
+// 对弈权重两份，按难度取（见文件头）：通玄=冠军 xuantian 02，大师=qv。都惰性加载，
+// 只在下第一手/warmup 时按当条消息的 play 取那一份 ⇒ 选大师不会连带下那 19 MB。
 const MODEL_URL = abs(`models/xuantian_02.onnx?rev=${REV}`);
+const MASTER_URL = abs(`models/qv_v1.onnx?rev=${REV}`);
 // 分析头不在 DEPS 里：它是复盘通道第一次用到时才惰性取的（4.3 MB），纯对弈的用户永远不下这个。
 const ANALYSIS_URL = abs(`models/analysis_v1.onnx?rev=${REV}`);
 const DEPS = [abs(`ort/ort.wasm.min.js?rev=${REV}`), abs(`siege_engine.js?rev=${REV}`), abs(`nn_ai.js?rev=${REV}`)];
@@ -72,8 +80,14 @@ if (!loadError && (!E || !NN || typeof ort === 'undefined')) {
 
 const MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test((self.navigator && navigator.userAgent) || '');
 
-// 模型对外名（换代时和 index.html 里的 NN_NAME 一起改：Worker 是独立作用域，拿不到页面那个）
-const NN_NAME = 'xuantian 02';
+// 模型对外名（换代时和 index.html 里的同名常量一起改：Worker 是独立作用域，拿不到页面那两个）
+const NN_NAME = 'xuantian 02';       // 通玄（冠军）
+const NN_MASTER_NAME = 'qv';         // 大师（gen013_qv，未晋升 ⇒ 不挂 xuantian）
+// play 键 -> 那一份对弈权重。name 只用于报错时点名（徽章上的名字由页面拼，一处定义）。
+const PLAY = {
+    master: { url: MASTER_URL, name: NN_MASTER_NAME },
+    tongxuan: { url: MODEL_URL, name: NN_NAME }
+};
 // 档位：按标定到的 ms/访问（含树开销）从上往下取第一个满足的档。
 // 这里只报档位，不报模型名 —— 徽章上的「xuantian 02·极」由页面拼，名字只有一处定义。
 const TIERS = [
@@ -83,8 +97,12 @@ const TIERS = [
     { name: '初', maxMsPerSim: 1e9, budgetMs: 2400, simsMax: 140 }
 ];
 
+// 对弈网络按档位各存一份（'master'/'tongxuan'，用到才下）。net 是冠军那份的别名：
+// 复盘首选、以及"分析头加载失败时读数的回落"都只认冠军，不跟着难度走。
+const nets = {};
 let net = null;
 let plan = TIERS[TIERS.length - 1];
+let calibrated = 0;         // 已标定出的 ms/访问；两份对弈网络同架构 ⇒ 标一次两边共用
 let initPromise = null;
 let initFailed = false;
 
@@ -93,7 +111,7 @@ let netAn = null;
 let anPromise = null;
 let anError = null;
 
-// 一份 ORT 配置两处用（对弈网络必载、分析头惰性载）：环境（wasmPaths/线程/日志级别）在 init 里已全局设好。
+// 一份 ORT 配置三处用（两档对弈网络各按需加载、分析头惰性载）：环境（wasmPaths/线程/日志级别）在 initOrt 里全局设好。
 async function loadNet(url, label) {
     const buf = await (await fetchChecked(url)).arrayBuffer();
     if (buf.byteLength < 1e6) throw new Error(label + '文件异常 ' + buf.byteLength);
@@ -128,10 +146,20 @@ async function ensureAnalysis() {
     return anPromise;
 }
 
-async function init() {
-    if (!E || !NN) throw new Error('缺少 SiegeEngine / NnAI');
-    send({ type: 'status', phase: 'loading' });
+/*
+ * 取某一档的对弈权重（用到才下）。这里不记住失败：权重下不来这一手就废了，
+ * 让本手重试比"一次会话内静默降级"好（分析头那边才是一次性 anError，它只影响读数）。
+ */
+async function ensurePlay(which) {
+    const key = PLAY[which] ? which : 'tongxuan';
+    if (nets[key]) return nets[key];
+    const n = await loadNet(PLAY[key].url, PLAY[key].name);
+    nets[key] = n;
+    if (key === 'tongxuan') net = n;      // 复盘通道认这个别名（见文件头：首选恒出在冠军上）
+    return n;
+}
 
+async function initOrt() {
     const isolated = !!self.crossOriginIsolated;
     const hw = (self.navigator && navigator.hardwareConcurrency) || 1;
     const threads = isolated ? Math.max(1, Math.min(4, hw)) : 1;
@@ -144,34 +172,50 @@ async function init() {
     const wasm = await toBlobUrl(abs('ort/ort-wasm-simd-threaded.wasm'), 'application/wasm');
     ort.env.wasm.wasmPaths = { mjs, wasm };
     ort.env.logLevel = 'error';
+    return { threads, isolated };
+}
 
-    const t0 = Date.now();
-    net = await loadNet(MODEL_URL, '模型');
-
-    // 标定：跑一次短搜索，用模块自己上报的 sims/ms 反推真实 ms/访问（含树与安全网开销）
+// 标定：跑一次短搜索，用模块自己上报的 sims/ms 反推真实 ms/访问（含树与安全网开销）。
+// 两档权重是同一个网络结构 ⇒ 推理开销同一量级，所以只标第一次加载的那份，之后复用。
+async function calibrate(n) {
+    if (calibrated) return calibrated;
     const st = E.newGame();
     st.currentPlayer = 1;
     let msPerSim = 12;
-    const probe = await NN.chooseAction(st, 1, { net, budgetMs: 400, simsMax: 60, cPuct: 1.5 });
+    const probe = await NN.chooseAction(st, 1, { net: n, budgetMs: 400, simsMax: 60, cPuct: 1.5 });
     if (probe && probe.meta && probe.meta.sims >= 5) {
         msPerSim = Math.max(0.2, probe.meta.ms / probe.meta.sims);
     }
     plan = TIERS.find(t => msPerSim <= t.maxMsPerSim) || TIERS[TIERS.length - 1];
+    calibrated = msPerSim;
+    return msPerSim;
+}
+
+async function init(which) {
+    if (!E || !NN) throw new Error('缺少 SiegeEngine / NnAI');
+    send({ type: 'status', phase: 'loading' });
+
+    const t0 = Date.now();
+    const env = await initOrt();
+    const msPerSim = await calibrate(await ensurePlay(which));
 
     send({
         type: 'status', phase: 'ready',
         info: { tier: plan.name, msPerSim: +msPerSim.toFixed(2), budgetMs: plan.budgetMs,
-                simsMax: plan.simsMax, threads, isolated, initMs: Date.now() - t0, mobile: MOBILE }
+                simsMax: plan.simsMax, threads: env.threads, isolated: env.isolated,
+                initMs: Date.now() - t0, mobile: MOBILE }
     });
 }
 
-async function think(state, id) {
+async function think(state, id, play) {
     const player = state.currentPlayer;
     const legal = E.legalActions(state, player);
     if (!legal.length) { send({ type: 'error', id, message: '无合法着法' }); return; }
     send({ type: 'progress', value: 0.25 });
+    // 取不到权重就抛给外层 catch ⇒ 主线程照旧走"回退规则 AI + 徽章说明"，不在这里编一个弱手。
+    const n = await ensurePlay(play);
     const r = await NN.chooseAction(state, player, {
-        net, budgetMs: plan.budgetMs, simsMax: plan.simsMax, cPuct: 1.5
+        net: n, budgetMs: plan.budgetMs, simsMax: plan.simsMax, cPuct: 1.5
     });
     send({ type: 'progress', value: 0.9 });
     if (!r || !r.moves || !r.wallDir) { send({ type: 'error', id, message: '搜索无结果' }); return; }
@@ -213,13 +257,15 @@ function ruleAreaDiff(state, p) { return E.areaRaceDiff(state, p); }
 // 一帧的网络读数：pw=胜率(0..1，行棋方视角)，ac=规则面积差(格，正=行棋方多)。pw 缺 ⇒ null。
 // rootV 只在"没有分析头、回落对弈网络"时才吃：它是对弈网络那次前向的产物，
 // 拿它当分析头的读数 = 折线一个口径、当前帧另一个口径，两条线会打架。
+// 回落的那份永远是**冠军**（不是当前难度那份）⇒ 折线口径不随难度变；只点过大师的用户此刻会把它取下来。
 async function netReadouts(state, p, rootV) {
     const an = await ensureAnalysis();
     let v = an ? NaN : rootV;
     if (!Number.isFinite(v)) {
         // 折线通道恒走这里（不搜索就没有 rootV）；suggest 通道带的那次前向属于另一张网络，
         // 只有回落到"读数与搜索同网络"时才复用 ⇒ 同一局面在折线上和当前帧读数上始终是同一个数。
-        try { v = (await (an || net).evaluate(state, p)).v; } catch (err) { v = NaN; }
+        const n = an || net || await ensurePlay('tongxuan');
+        try { v = (await n.evaluate(state, p)).v; } catch (err) { v = NaN; }
     }
     const pw = Number.isFinite(v) ? Math.min(1, Math.max(0, (v + 1) / 2)) : null;
     let ac = null;
@@ -287,8 +333,9 @@ async function searchFrame(state) {
     const p = state.currentPlayer;
     // 与折线同一张网络：这一遍的产物会**覆盖**静态读数画在同一条线上，混两个口径等于造假。
     const an = await ensureAnalysis();
+    const n = an || net || await ensurePlay('tongxuan');   // 回落冠军那份，不随难度变
     const r = await NN.chooseAction(state, p, {
-        net: an || net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, rootDist: true
+        net: n, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, rootDist: true
     });
     if (!r || !r.meta) return null;
     const m = r.meta;
@@ -325,8 +372,11 @@ async function runSearchAnalyze(states, id) {
 
 async function runSuggest(state, id) {
     const player = state.currentPlayer;
+    // 首选恒出在冠军那份权重上（复盘答的是"该怎么走"，与你这局玩的是哪档无关），
+    // 所以这里不能跟着 play 走；只点过大师的用户第一次复盘会在这一步把冠军下下来。
+    const champ = await ensurePlay('tongxuan');
     const r = await NN.chooseAction(state, player, {
-        net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, topK: REPLAY.topK
+        net: champ, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, topK: REPLAY.topK
     });
     if (!r) { send({ type: 'suggestion', id, error: '无合法着法' }); return; }
     // 前三选仍出在对弈网络上（用户看到的"该怎么走"要和引擎实际走得出的一致）；
@@ -339,7 +389,7 @@ async function runSuggest(state, id) {
 }
 
 self.onmessage = function (e) {
-    const { state, id, ping, warmup, analyze, searchAnalyze, suggest, states } = e.data || {};
+    const { state, id, ping, warmup, analyze, searchAnalyze, suggest, states, play } = e.data || {};
     if (ping) {
         send({ type: 'pong', script: 'nn_worker.js', deps: DEPS.length, loadError });
         return;
@@ -353,12 +403,13 @@ self.onmessage = function (e) {
         return;
     }
     if (initFailed) {
-        const msg = NN_NAME + ' 不可用（已初始化失败）';
+        const msg = (PLAY[play] ? PLAY[play].name : NN_NAME) + ' 不可用（已初始化失败）';
         send({ type: analyze ? 'analysis' : searchAnalyze ? 'searchAnalysis' : suggest ? 'suggestion' : 'error', id, message: msg, error: msg });
         return;
     }
     if (!initPromise) {
-        initPromise = init().catch(err => {
+        // 首条消息是哪一档，init 就先把那一档的权重取下来（复盘/suggest 那一路 job 内部还会再 ensurePlay('tongxuan')）
+        initPromise = init(play).catch(err => {
             initFailed = true;
             const message = (err && err.message) || String(err);
             send({ type: 'status', phase: 'failed', message });
@@ -368,8 +419,10 @@ self.onmessage = function (e) {
     const job = analyze ? () => runAnalyze(states, id)
               : searchAnalyze ? () => runSearchAnalyze(states, id)
               : suggest ? () => runSuggest(state, id)
-              : (warmup || !state) ? null
-              : () => think(state, id);
+              // warmup = "把这档的权重先取下来"：换难度时页面会再发一次，init 已经加载过就是空操作
+              : warmup ? () => ensurePlay(play)
+              : state ? () => think(state, id, play)
+              : null;
     if (!job) return;
     initPromise.then(job).catch(err => {
         const message = (err && err.message) || String(err);

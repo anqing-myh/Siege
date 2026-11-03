@@ -269,16 +269,6 @@
         }
         .diff-btn:hover { background: #7a6a54; }
         .diff-btn.active:hover { background: #c7a77d; }
-        /* 难度按钮上的标定分：由 ELO.byDiff 涂上去（数字只存一处）。小两号、压暗，别抢难度名的视觉重量。
-           文本自带全角括号，所以只留 1px；再挤就成"专家 （elo：1500）"那种断开的样子了。 */
-        .diff-btn .dif-elo {
-            font-style: normal;
-            font-size: 11px;
-            opacity: .62;
-            margin-left: 1px;
-            letter-spacing: 0;
-        }
-        .diff-btn.active .dif-elo { opacity: .78; }
         #aiProgressBar {
             width: 100%;
             max-width: 360px;
@@ -660,9 +650,9 @@
         <span id="tongxuanInfo" class="tx-info" style="display:none"></span>
         <div id="difficultyRow">
             <span>难度：</span>
-            <button class="diff-btn active" data-diff="expert">专家<i class="dif-elo"></i></button>
-            <button class="diff-btn" data-diff="master">大师<i class="dif-elo"></i></button>
-            <button class="diff-btn" data-diff="tongxuan">通玄<i class="dif-elo"></i></button>
+            <button class="diff-btn active" data-diff="expert">专家</button>
+            <button class="diff-btn" data-diff="master">大师</button>
+            <button class="diff-btn" data-diff="tongxuan">通玄</button>
         </div>
     </div>
     <div id="bottomBar">
@@ -689,7 +679,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
-        <br>版本信息：Version 3.1.17 2026-11-03  感谢游玩~
+        <br>版本信息：Version 3.1.18 2026-11-04  感谢游玩~
     </div>
 </div>
 <script>
@@ -1876,31 +1866,21 @@ self.onmessage = function(e) {
         return aiWorker;
     }
 
-    // ---- 通玄（NN）Web Worker ----
-    // 「通玄」是**难度名**（难度按钮上那一个字），模型对外一律叫 NN_NAME（当前 = 第 1 代，内部产物 gen007A3）。
-    // 换代时改这里 + nn_worker.js 里的同名常量（两处，Worker 是独立作用域拿不到页面的）；
-    // 权重文件名跟着代走：xuantian 01 = tongxuan_v1.onnx（gen007A3，历史名保留在仓库里），
-    // xuantian 02 = xuantian_02.onnx（gen008B1）。以 xuantian 命名的就是每一代选出来的冠军模型。
+    // ---- NN 难度档（大师 / 通玄）的 Web Worker ----
+    // 「大师」「通玄」是**难度名**，模型另有对外名：通玄 = NN_NAME（每一代选出来的冠军，
+    // xuantian 01 = tongxuan_v1.onnx（gen007A3，历史名保留在仓库里），xuantian 02 = xuantian_02.onnx（gen008B1）），
+    // 大师 = NN_MASTER_NAME（models/qv_v1.onnx = 内部产物 gen013_qv，8 轮）。
+    // qv 没被晋升 ⇒ 按规矩不挂 xuantian（以 xuantian 命名的只认冠军）。
+    // 换代时改这里 + nn_worker.js 里的同名常量（两处，Worker 是独立作用域拿不到页面这两个）。
     const NN_NAME = 'xuantian 02';
-    // ---- 强度标定（Elo）：只往难度按钮上涂一个数，别的都不显示（区间、台账、口径说明留在本地台账里）----
-    // 尺子：results/ 里全部 sims=1200 口径的对拍（1,816 局）合成强度表（带和棋的
-    // Bradley–Terry / Davidson 极大似然 + 2000 次 bootstrap），重算：node engine/elo_ledger.js
-    // 锚点是大师（ai4）= 2000，它是实测进表的（425 局）；通玄 = gen008B1（对大师 +426，区间 [356,506]）。
-    // 专家（ai3）没有 sims=1200 口径的可靠对拍（链条推算约 1947，但那截链条口径不可证）⇒ 1500 是占位标注。
-    // 尺度：每 +400 分 = 强度 ×10；每 +100 分 ≈ 期望得分 64%。
-    // 难度按钮与台账是同一个 AI：engine/siege_ai.js 由 engine/extract_worker.js 从本页内嵌的
-    // 旧 AI 逐字节抽出（ai3=深度3=专家，ai4=深度4=大师），上线前 check_frontend_sync.js 会卡漂移。
-    const ELO = {
-        byDiff: { expert: 1500, master: 2000, tongxuan: 2426 },
-        // 回退话术要用的一次性数字，单独钉住（别拿 byDiff 相减去猜，换代顺序会动）
-        degradeGap: 426
-    };
-    function paintEloChips() {
-        document.querySelectorAll('.diff-btn').forEach(b => {
-            const chip = b.querySelector('.dif-elo'), v = ELO.byDiff[b.dataset.diff];
-            if (chip) chip.textContent = v == null ? '' : '（elo：' + v + '）';
-        });
-    }
+    const NN_MASTER_NAME = 'qv';
+    // 会用网络的两档（专家始终是规则 AI）。徽章/进度条/回退话术都按这个判断，别再写死 'tongxuan'。
+    function isNNDiff(d) { return d === 'master' || d === 'tongxuan'; }
+    // 对局通道的名字（复盘通道不在这儿：它恒用冠军，见 nn_worker.js 的 runSuggest）
+    function nnPlayName() { return aiDifficulty === 'master' ? NN_MASTER_NAME : NN_NAME; }
+    // 规则 AI（engine/siege_ai.js 由 engine/extract_worker.js 从本页内嵌的旧 AI 逐字节抽出）
+    // 仍是**回退路径**：ai3=深度3=专家，ai4=深度4=网络不可用时代打的那一档。
+    // 上线前 check_frontend_sync.js 会卡两端漂移。
     // 失败必须"可见 + 快"：Worker 静默死掉 = 进度条不涨 + AI 永不落子，是最坏的体验。
     // 因此：创建即探测（ping 4 秒无回音 = 脚本没跑起来），加载状态写进页面上的 #tongxuanInfo。
     let nnWorker = null;
@@ -1919,14 +1899,14 @@ self.onmessage = function(e) {
     function nnBadge(text, cls, full) {
         const el = document.getElementById('tongxuanInfo');
         if (!el) return;
-        if (aiDifficulty !== 'tongxuan') { el.style.display = 'none'; return; }
+        if (!isNNDiff(aiDifficulty)) { el.style.display = 'none'; return; }
         el.style.display = '';
         el.textContent = text;
         el.title = full || text;
         el.className = 'tx-info ' + (cls || '');
     }
     function nnTierText(i) {
-        return `${NN_NAME} ${i.simsMax} sims/手 ≤${(i.budgetMs / 1000).toFixed(1)}s`;
+        return `${nnPlayName()} ${i.simsMax} sims/手 ≤${(i.budgetMs / 1000).toFixed(1)}s`;
     }
     function nnStopRamp() { if (nnRamp) { clearInterval(nnRamp); nnRamp = null; } }
     function nnStartRamp() {
@@ -1939,19 +1919,17 @@ self.onmessage = function(e) {
         }, 300);
     }
 
-    // 模型不可用 -> 本手交回旧 AI，难度选择同步回「大师」（战绩归属不能作假），页面上留话
+    // 网络不可用 -> 本手交回规则 AI（深度 4），页面上留话。难度选择**不动**：
+    // 大师/通玄现在只差"用哪份权重"，把按钮改成另一档反而把实际对手说错了
+    // （改档 = 战绩归到那一档，而归档依据是"用户选的档位"，不是"这台机器临时能跑什么"）。
     function nnDegradeUI(reason) {
         nnDisabled = true;
         nnStopRamp();
-        if (aiDifficulty === 'tongxuan') {
-            aiDifficulty = 'master';
-            diffBtns.forEach(b => b.classList.toggle('active', b.dataset.diff === 'master'));
-        }
         const why = reason || '未知原因';
         nnWhy = why;
-        nnBadge(NN_NAME + ' 不可用：' + why.slice(0, 140), 'tx-bad', why);
-        statusMessage.textContent = '⚠ ' + NN_NAME + ' 不可用，本局改用大师（elo 约 −' + ELO.degradeGap + '）';
-        console.warn('[xuantian] 回退大师:', reason);
+        nnBadge(nnPlayName() + ' 不可用：' + why.slice(0, 140), 'tx-bad', why);
+        statusMessage.textContent = '⚠ ' + nnPlayName() + ' 不可用，本局由规则 AI（深度 4）代打';
+        console.warn('[xuantian] 回退规则 AI:', reason);
     }
     function nnFailNow(reason) {
         const a = nnAbort; nnAbort = null;
@@ -2007,8 +1985,8 @@ self.onmessage = function(e) {
         if (m.type === 'analysis' || m.type === 'suggestion' || m.type === 'searchAnalysis') { nnResolveJob(m); return; }
         if (m.type !== 'status') return;
         if (m.phase === 'loading') {
-            nnBadge(NN_NAME + ' 加载中：ONNX 运行时 + 权重 约 19 MB（只需一次）…', 'tx-warn');
-            statusMessage.textContent = '🧠 ' + NN_NAME + ' 首次加载中（约 19 MB，只需一次）…';
+            nnBadge(nnPlayName() + ' 加载中：ONNX 运行时 + 权重 约 19 MB（只需一次）…', 'tx-warn');
+            statusMessage.textContent = '🧠 ' + nnPlayName() + ' 首次加载中（约 19 MB，只需一次）…';
         } else if (m.phase === 'ready') {
             nnReady = true; nnInfo = m.info;
             nnBadge(nnTierText(m.info), 'tx-ok');
@@ -2020,7 +1998,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v14';   // 与 nn_worker.js 里的 REV 同步（对弈权重与分析权重、脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v15';   // 与 nn_worker.js 里的 REV 同步（两档对弈权重与分析权重、脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -2079,7 +2057,7 @@ self.onmessage = function(e) {
         if (nnWorker) return Promise.resolve(nnWorker);
         if (nnLoading) return nnLoading;
         nnAlive = false;
-        nnBadge(NN_NAME + ' 加载中…（前端 ' + NN_REV + '，内联模式）', 'tx-warn');
+        nnBadge(nnPlayName() + ' 加载中…（前端 ' + NN_REV + '，内联模式）', 'tx-warn');
         nnLoading = nnCreateWorker().then(w => {
             nnLoading = null;
             nnWorker = w;
@@ -2107,6 +2085,10 @@ self.onmessage = function(e) {
 
     function startNNTurn(stateCopy, onResult, onClassic) {
         const myId = ++nnToken;
+        // 这一手用哪份权重在**发出的那一刻**定死（Worker 里的 play 决定加载哪份权重），
+        // 徽章上的名字也跟着它走 —— 别让"思考期间点了别的难度按钮"把口径改到一半。
+        const playKey = aiDifficulty === 'master' ? 'master' : 'tongxuan';
+        const playName = playKey === 'master' ? NN_MASTER_NAME : NN_NAME;
         return getNNWorker().then(worker => {
             if (myId !== nnToken) return;           // 期间重开/换难度，这条线作废
             if (!worker) { nnStopRamp(); onClassic(); return; }
@@ -2136,7 +2118,7 @@ self.onmessage = function(e) {
                     console.log('[xuantian] 本手', msg.meta);
                     if (nnInfo) {
                         const why = msg.meta.why ? ' · ' + msg.meta.why : '';
-                        nnBadge(`${NN_NAME} 上一手 ${msg.meta.sims} sims / ${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
+                        nnBadge(`${playName} 上一手 ${msg.meta.sims} sims / ${(msg.meta.ms / 1000).toFixed(1)}s${why}`, 'tx-ok');
                     }
                 }
                 onResult({ data: { type: 'result', value: msg.value } });
@@ -2145,7 +2127,7 @@ self.onmessage = function(e) {
                 console.error('xuantian worker error:', err && err.message);
                 nnFailNow('worker-error');
             };
-            worker.postMessage({ state: stateCopy, id: myId });
+            worker.postMessage({ state: stateCopy, id: myId, play: playKey });
             if (!nnReady) nnStartRamp();
             nnWatchdog = setTimeout(() => {
                 nnFailNow(nnReady ? '本手超时' : '加载超时（模型没下完，多半是网络或被拦截）');
@@ -2179,7 +2161,7 @@ self.onmessage = function(e) {
         p2p: { wins: 0, losses: 0, draws: 0 }
     };
 
-    // 难度：'expert'=搜索深度3, 'master'=搜索深度4, 'tongxuan'=神经网络+PUCT（nn_worker.js，失败自动回退大师）
+    // 难度：'expert'=规则搜索深度3, 'master'=神经网络 qv, 'tongxuan'=神经网络 xuantian 02（两者都由 nn_worker.js 落子，网络不可用时回规则 AI 深度4）
     let aiDifficulty = 'expert';
 
     // ---- DOM ----
@@ -3716,7 +3698,7 @@ self.onmessage = function(e) {
 
     function setAIProgress(value) {
         if (!aiProgressBar) return;
-        if (game.mode !== 'pve' || aiDifficulty === 'tongxuan') {
+        if (game.mode !== 'pve' || isNNDiff(aiDifficulty)) {
             aiProgressBar.style.display = 'none';
             aiProgressFill.style.width = '0%';
             return;
@@ -3735,7 +3717,9 @@ self.onmessage = function(e) {
         setAIProgress(0.02);
 
         const searchDepth = (aiDifficulty === 'expert') ? 3 : 4;
-        const useNN = (aiDifficulty === 'tongxuan');
+        // 大师/通玄都走网络（各用一份权重，见 startNNTurn 的 play），拿不到网络时统一回规则 AI 深度 4。
+        // 专家 = 规则 AI 深度 3，永远不碰 Worker ⇒ 也不会下载那 19 MB。
+        const useNN = isNNDiff(aiDifficulty) && !nnDisabled;
         const stateCopy = JSON.parse(JSON.stringify({
             board: game.board,
             players: game.players,
@@ -4253,17 +4237,22 @@ self.onmessage = function(e) {
             diffBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             aiDifficulty = btn.dataset.diff;
-            if (aiDifficulty === 'tongxuan') {
-                if (nnDisabled) {                 // 上一次失败过：点通玄即重试一次加载
+            if (isNNDiff(aiDifficulty)) {
+                if (nnDisabled) {                 // 上一次失败过：点这一档即重试一次加载
                     if (nnWorker) nnWorker.terminate();
                     nnWorker = null; nnLoading = null; nnDisabled = false; nnReady = false; nnAlive = false; nnWhy = null;
                 }
-                setAIProgress(null);              // 通玄不显示进度条
-                // 提前开始取权重，别卡在 AI 回合
-                getNNWorker().then(w => { if (w && aiDifficulty === 'tongxuan') w.postMessage({ warmup: true }); });
+                setAIProgress(null);              // 走网络的档位不显示进度条（NN 用时间预算，没有可比的进度）
+                // 提前开始取权重，别卡在 AI 回合。两档共用同一个 Worker（换档不重建 ⇒ 已下的不再下），
+                // warmup 带 play：Worker 里 ensurePlay 幂等，已经加载过就是空操作。
+                getNNWorker().then(w => {
+                    if (!w || !isNNDiff(aiDifficulty)) return;
+                    w.postMessage({ warmup: true, play: aiDifficulty });
+                    if (nnReady && nnInfo) nnBadge(nnTierText(nnInfo), 'tx-ok');   // 徽章换成这一档的名字
+                });
             } else {
                 nnBadge('未启用', '');            // nnBadge 内部会隐藏 tongxuanInfo
-                setAIProgress(0);                 // 专家/大师显示进度条
+                setAIProgress(0);                 // 专家显示进度条
                 if (nnWorker) { nnWorker.terminate(); nnWorker = null; }
                 nnLoading = null; nnDisabled = false; nnReady = false; nnInfo = null;
             }
@@ -4353,9 +4342,6 @@ self.onmessage = function(e) {
             aboutOverlay.style.display = 'none';
         }
     };
-
-    // 难度按钮上的标定分角标（数字只在 ELO 里存一份）
-    paintEloChips();
 
     // ---- 规则 ----
     document.getElementById('rulesBtn').addEventListener('click', showRulesModal);
