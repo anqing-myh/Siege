@@ -577,7 +577,7 @@
         <button class="mode-btn" data-mode="p2p">🌐 联机对战</button>
     </div>
     <div id="boardRow">
-        <canvas id="wrBar" width="46" height="420" title="胜率（模型估值，己方视角，50% 均势）" style="display:none"></canvas>
+        <canvas id="wrBar" width="46" height="420" title="胜率（分析模型估值，己方视角，50% 均势）" style="display:none"></canvas>
         <div class="board-wrapper">
             <div class="coord coord-top" id="coordTop" aria-hidden="true"></div>
             <div class="coord coord-left" id="coordLeft" aria-hidden="true"></div>
@@ -689,7 +689,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
-        <br>版本信息：Version 3.1.16 2026-11-02  感谢游玩~
+        <br>版本信息：Version 3.1.17 2026-11-03  感谢游玩~
     </div>
 </div>
 <script>
@@ -1960,10 +1960,13 @@ self.onmessage = function(e) {
     }
 
     // ---- 复盘用的一次性请求 ----
-    // 与对局通道共用同一个 Worker（省掉二次下载 19 MB），但按 id 走自己的回调表，
-    // 不碰 think 的 nnAbort/进度条：复盘时根本没有对局在跑，两条通道不会撞车。
+    // 与对局通道共用同一个 Worker（对弈权重那份 19 MB 不必再下），但复盘读数另取一份分析权重
+    // models/analysis_v1.onnx（4.3 MB，Worker 里第一次用到时才惰性下，纯对弈的用户永远不下它）。
+    // 结果按 id 走自己的回调表，不碰 think 的 nnAbort/进度条：复盘时根本没有对局在跑，两条通道不会撞车。
     const nnJobs = new Map();
     let nnJobSeq = 1e9;   // 对局 id 从 1 递增，复盘 id 从 1e9 递增，互不串台
+    // 首帧的超时里要装得下那次"只有复盘才会发生"的 4.3 MB 下载（之后 Worker 命中缓存，不再有这个开销）
+    const NN_ANALYSIS_FETCH_MS = 30000;
     function nnAsk(kind, payload, timeoutMs, onPartial) {
         return getNNWorker().then(worker => {
             if (!worker) throw new Error(nnWhy || (NN_NAME + ' 不可用'));
@@ -1973,7 +1976,7 @@ self.onmessage = function(e) {
                     nnJobs.delete(id);
                     rej(new Error(kind === 'analyze' ? '整局评估超时'
                         : kind === 'searchAnalyze' ? '整局搜索判读超时' : '本手评估超时'));
-                }, timeoutMs);
+                }, timeoutMs + NN_ANALYSIS_FETCH_MS);   // 首帧可能夹着分析权重的下载，见上面 NN_ANALYSIS_FETCH_MS
                 nnJobs.set(id, {
                     partial: onPartial,
                     done: (msg) => {
@@ -2017,7 +2020,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v13';   // 与 nn_worker.js 里的 REV 同步（对弈权重与脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v14';   // 与 nn_worker.js 里的 REV 同步（对弈权重与分析权重、脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -2834,12 +2837,17 @@ self.onmessage = function(e) {
      * frames[k] = 第 k 个"轮到谁"的局面，move = 从这一局面上实际走的那一手（终局帧为 null）。
      * 于是看第 k 帧时：模型首选 = 从 frames[k] 搜出来的前三手（点哪一行就按哪一行画盘），
      * values[k] 也是 frames[k] 的判读结果（{solved,pw,ac,rc,over,tn,tw,td}）。
-     * 两条读数一条来自网络、一条来自规则（都是本帧行棋方视角）：pw = 冠军网络的胜率，
+     * 两条读数一条来自网络、一条来自规则（都是本帧行棋方视角）：pw = 分析网络（models/analysis_v1.onnx
+     * = gen013_qv16，3.1.17 起）的胜率，
      * ac = 规则 BFS 归属面积差（每格判给"谁步数更少"，格；3.1.15 起取代面积分析网络，见 nn_worker.js 的 ruleAreaDiff）。
      * 左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
-     * 为什么现在敢用网络头：xuantian 02 的 value 目标是 win 口径（±1/0），MSE 的最优解就是 2·p_胜−1
+     * 为什么现在敢用网络头：分析头的 value 目标是 win 口径（±1/0），MSE 的最优解就是 2·p_胜−1
      * ⇒ (v+1)/2 本身就是校准概率，不再是上一代 mix 口径那种"0.7 打底、全盘 |v|≤0.59 全在死区、
      * 反解出来每帧都是 0 格"的死数字（§39/§42 的老账，随 §52 定稿 win 一并作废）；
+     * 为什么从对弈网络换成专门的分析网络（同一批 800 组、同一个终局目标上量的尺，engine/ruler_head.js）：
+     * 分析头 R²=0.597 / MAE=0.304 / **斜率 1.00**，对弈头（xuantian 02）只有 0.510 / 0.352 / 斜率 0.84
+     * ⇒ 对弈头过自信，把领先与落后的差距整体夸大 ~19%，而斜率 1.00 才说明前端这个 (v+1)/2 一行折扣都不用打；
+     * 对弈仍走 xuantian 02（强度由 arena 判，跟读数准不准是两件事）。
      * 面积差不再拿对弈网络的 value 去硬换算，也不再用分析网络（它 20 轮最好的 R² 只有 +0.064）。
      * 也不用搜索树里的终局样本 —— 400 访问在中盘只走到 0–32 个终局、还全挤在最佳线路上，
      * 一报就是 0% 或 100%（NOTES §42 实测）。要"模型觉得这手好不好"看首选行的 Q 与访问。

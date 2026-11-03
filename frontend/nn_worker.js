@@ -1,8 +1,9 @@
 /*
  * 「通玄」难度档的 Worker：浏览器内 ONNX 推理 + PUCT 搜索。（「通玄」是难度名，模型对外叫 xuantian NN）
  * 对弈权重 models/xuantian_02.onnx = 内部训练产物 gen008B1 = 对外的 xuantian 02（冠军名按代递增）。
- * 复盘右条的面积差读数（3.1.15 起）是**纯规则 BFS 归属**算出来的，不再用网络：
- * 每格判给"谁步数更少"，取差。分析权重 models/area_v1.onnx（gen008C）因此**下线但留在仓库里当回滚点**，
+ * 分析权重 models/analysis_v1.onnx = 内部训练产物 gen013_qv16（3.1.17 起）：**只喂复盘读数，不参与对弈**。
+ * 复盘右条的面积差读数是**纯规则 BFS 归属**算出来的，网络只管左条的胜率；
+ * 面积分析头 models/area_v1.onnx（gen008C）因此**下线但留在仓库里当回滚点**，
  * 没有任何代码引用它 ⇒ 浏览器不会再下载它。
  *
  * 协议：与旧 AI Worker 兼容——收 { state, depth, id }，回 { type:'result', value:{moves,wallDir} }。
@@ -10,7 +11,8 @@
  *       {ping:true} -> {type:'pong', script, deps, loadError}（主线程用它 3 秒内判定 Worker 是否活着）。
  * 复盘：{analyze:true, states:[...], id} -> 每帧一条 {type:'analysis', id, partial:true, index, value}
  *       （value = {solved,pw,ac,over[,rc]}；面板那两条都是**本帧行棋方的静态形势判断**，不搜索：
- *        pw = 冠军网络 value 头的胜率（gen008B1 是 win 口径 ±1/0 ⇒ (v+1)/2 就是概率，见 NOTES §52），
+ *        pw = 分析网络 value 头的胜率（analysis_v1 是 win 口径 ±1/0 ⇒ (v+1)/2 就是概率，见 NOTES §52；
+ *             校准斜率实测 1.00，所以这个数不需要打任何折扣，见下方 ANALYSIS 一节），
  *        ac = 规则 BFS 归属的面积差（格，正=行棋方多；与训练编码 plane 9 同一口径），
  *        over=true 表示这帧已经终局（此时 rc = 真实终局面积差，不是估计），
  *        solved=+1 表示规则已判定（本帧存在一步制胜的着法，与样本无关）），
@@ -29,7 +31,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v13';
+const REV = 'v14';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -44,6 +46,8 @@ async function toBlobUrl(url, type) {
     return URL.createObjectURL(new Blob([await (await fetchChecked(url)).arrayBuffer()], { type }));
 }
 const MODEL_URL = abs(`models/xuantian_02.onnx?rev=${REV}`);
+// 分析头不在 DEPS 里：它是复盘通道第一次用到时才惰性取的（4.3 MB），纯对弈的用户永远不下这个。
+const ANALYSIS_URL = abs(`models/analysis_v1.onnx?rev=${REV}`);
 const DEPS = [abs(`ort/ort.wasm.min.js?rev=${REV}`), abs(`siege_engine.js?rev=${REV}`), abs(`nn_ai.js?rev=${REV}`)];
 
 const send = (m) => self.postMessage(m);
@@ -84,6 +88,46 @@ let plan = TIERS[TIERS.length - 1];
 let initPromise = null;
 let initFailed = false;
 
+// 复盘读数用的分析头（gen013_qv16）：见下方 ensureAnalysis 为什么与对弈网络分开。
+let netAn = null;
+let anPromise = null;
+let anError = null;
+
+// 一份 ORT 配置两处用（对弈网络必载、分析头惰性载）：环境（wasmPaths/线程/日志级别）在 init 里已全局设好。
+async function loadNet(url, label) {
+    const buf = await (await fetchChecked(url)).arrayBuffer();
+    if (buf.byteLength < 1e6) throw new Error(label + '文件异常 ' + buf.byteLength);
+    const session = await ort.InferenceSession.create(buf, {
+        graphOptimizationLevel: 'all',
+        executionProviders: ['wasm']
+    });
+    return NN.createOrtNet(ort, session);
+}
+
+/*
+ * 为什么复盘的胜率不读对弈网络那一个头（实测在同一批 800 组、同一个终局目标 zWin 上量的，
+ * engine/ruler_head.js ⇒ logs/ruler_g13_qv16.txt / ruler_g13.txt）：
+ *   qv16（=analysis_v1）  R²=0.597  MAE=0.304  斜率 1.00
+ *   gen008B1（=对弈头）   R²=0.510  MAE=0.352  斜率 0.84
+ * 斜率才是关键：0.84 = 过自信，它把领先与落后的差距整体夸大 ~19%，读起来"大优/危险"都比实际夸张；
+ * 1.00 意味着 (v+1)/2 直接就是概率，前端一行折扣都不用打。对弈仍走 xuantian_02 —— 强度由 arena 判，
+ * 跟读数准不准是两件事，换对弈网络的结论还没出（NOTES §63）。
+ * 加载失败 ⇒ 记住 anError、整个会话不再重试，读数静默回落到对弈头（口径退回斜率 0.84，不打扰用户）。
+ */
+async function ensureAnalysis() {
+    if (anPromise) return anPromise;
+    anPromise = (async () => {
+        try {
+            netAn = await loadNet(ANALYSIS_URL, '分析模型');
+        } catch (err) {
+            anError = (err && err.message) || String(err);
+            netAn = null;
+        }
+        return netAn;
+    })();
+    return anPromise;
+}
+
 async function init() {
     if (!E || !NN) throw new Error('缺少 SiegeEngine / NnAI');
     send({ type: 'status', phase: 'loading' });
@@ -101,15 +145,8 @@ async function init() {
     ort.env.wasm.wasmPaths = { mjs, wasm };
     ort.env.logLevel = 'error';
 
-    const buf = await (await fetchChecked(MODEL_URL)).arrayBuffer();
-    if (buf.byteLength < 1e6) throw new Error('模型文件异常 ' + buf.byteLength);
-
     const t0 = Date.now();
-    const session = await ort.InferenceSession.create(buf, {
-        graphOptimizationLevel: 'all',
-        executionProviders: ['wasm']
-    });
-    net = NN.createOrtNet(ort, session);
+    net = await loadNet(MODEL_URL, '模型');
 
     // 标定：跑一次短搜索，用模块自己上报的 sims/ms 反推真实 ms/访问（含树与安全网开销）
     const st = E.newGame();
@@ -143,7 +180,8 @@ async function think(state, id) {
 
 // ---------- 复盘分析通道 ----------
 /*
- * 与对局通道共用 worker 和 net，但结果走自己的 {type:'analysis'|'suggestion'} + id，
+ * 与对局通道共用 worker，但复盘读数走另一张网络（netAn，见 ensureAnalysis）；
+ * 结果走自己的 {type:'analysis'|'suggestion'} + id，
  * 主线程按 id 找回调，绝不碰 think() 的 nnAbort/进度条。
  *
  * 折线的语义 = **静态形势判断**：每帧只取"这个局面 + 本帧行棋方"的网络预报，不搜索（3.1.6 用户拍板）。
@@ -154,6 +192,8 @@ async function think(state, id) {
  *
  * 两个已知代价写进 NOTES §54，别再当故障查：
  *  1) 折线偏平。value 头是 L2 训出来的**条件均值**，最优解就是把领先与落后都往 50% 收（§50.3 那条警告）。
+ *     换到分析头（3.1.17）不消除它：那一步只把**斜率**从 0.84 修回 1.00（差距不再被夸大 ~19%）、
+ *     R² 从 0.51 提到 0.60；条件均值的收缩本身是目标函数决定的，只能换口径（已否决）不能换网络。
  *  2) 「一方走完好手之后胜率反而上一格」会长期存在：走前那一帧含"他可能走歪"的平均，
  *     走后那一帧是兑现之后的局面，台阶就是那份差价。要抹掉只能换成"最好可达"口径（本轮已否决）。
  */
@@ -171,12 +211,15 @@ const REPLAY = { budgetMs: 900, simsMax: 400, topK: 3, cPuct: 1.5 };   // 当前
 function ruleAreaDiff(state, p) { return E.areaRaceDiff(state, p); }
 
 // 一帧的网络读数：pw=胜率(0..1，行棋方视角)，ac=规则面积差(格，正=行棋方多)。pw 缺 ⇒ null。
+// rootV 只在"没有分析头、回落对弈网络"时才吃：它是对弈网络那次前向的产物，
+// 拿它当分析头的读数 = 折线一个口径、当前帧另一个口径，两条线会打架。
 async function netReadouts(state, p, rootV) {
-    let v = rootV;
+    const an = await ensureAnalysis();
+    let v = an ? NaN : rootV;
     if (!Number.isFinite(v)) {
-        // 折线通道恒走这里（不搜索就没有 rootV）；suggest 通道带 rootV，而它本来就是同一次前向的值
-        // ⇒ 同一局面在折线上和在当前帧读数上是同一个数，两套口径不会打架。
-        try { v = (await net.evaluate(state, p)).v; } catch (err) { v = NaN; }
+        // 折线通道恒走这里（不搜索就没有 rootV）；suggest 通道带的那次前向属于另一张网络，
+        // 只有回落到"读数与搜索同网络"时才复用 ⇒ 同一局面在折线上和当前帧读数上始终是同一个数。
+        try { v = (await (an || net).evaluate(state, p)).v; } catch (err) { v = NaN; }
     }
     const pw = Number.isFinite(v) ? Math.min(1, Math.max(0, (v + 1) / 2)) : null;
     let ac = null;
@@ -242,8 +285,10 @@ async function areaAfter(state, p, action) {
 
 async function searchFrame(state) {
     const p = state.currentPlayer;
+    // 与折线同一张网络：这一遍的产物会**覆盖**静态读数画在同一条线上，混两个口径等于造假。
+    const an = await ensureAnalysis();
     const r = await NN.chooseAction(state, p, {
-        net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, rootDist: true
+        net: an || net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, rootDist: true
     });
     if (!r || !r.meta) return null;
     const m = r.meta;
@@ -284,6 +329,8 @@ async function runSuggest(state, id) {
         net, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, topK: REPLAY.topK
     });
     if (!r) { send({ type: 'suggestion', id, error: '无合法着法' }); return; }
+    // 前三选仍出在对弈网络上（用户看到的"该怎么走"要和引擎实际走得出的一致）；
+    // 读数另取一次前向：有分析头时 r.meta.rootV 是对弈网络的值，不能吃（见 netReadouts）。
     // 本手这一搜顺带出的读数：主线程立刻拿去画形势条，不用等整局判读跑到这一帧。
     // cfg 是给面板标题报口径用的（sims 上限/PUCT 常数/预算），规则判定帧也带上
     const rd = await netReadouts(state, player, r.meta && r.meta.rootV);
