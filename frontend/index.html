@@ -1906,6 +1906,8 @@ self.onmessage = function(e) {
     let nnDisabled = false;
     let nnInfo = null;
     let nnWhy = null;         // 最近一次不可用的原因（复盘面板要复用）
+    let nnDegradeRecoverable = false;   // 这次回退只是"权重还没到货"⇒ Worker 仍在后台下，ready 一到就接手
+    let nnRecoverNext = false;          // 一次性开关：由加载看门狗竖起，被 nnDegradeUI 吃掉
     let nnToken = 0;
     let nnWatchdog = null;
     let nnAbort = null;       // 本手的回退动作，由 startNNTurn 注册；探测失败时也能触发
@@ -1945,8 +1947,13 @@ self.onmessage = function(e) {
         nnStopRamp();
         const why = reason || '未知原因';
         nnWhy = why;
-        nnBadge(nnPlayName() + ' 不可用：' + why.slice(0, 140), 'tx-bad', why);
-        statusMessage.textContent = '⚠ ' + nnPlayName() + ' 不可用，本局由规则 AI（深度 4）代打';
+        // "加载超时"不等于"这台机器跑不了网络"：托管端 CDN 偶尔把 8 MB 压到 200 s 以上，
+        // 而那一手不能干等 ⇒ 交规则 AI 代打，但**别把 Worker 判死**（nnRecoverNext）。
+        nnDegradeRecoverable = nnRecoverNext; nnRecoverNext = false;
+        nnBadge(nnPlayName() + ' 不可用：' + why.slice(0, 140) + (nnDegradeRecoverable ? '（后台继续下载，到货自动接手）' : ''),
+            'tx-bad', why);
+        statusMessage.textContent = '⚠ ' + nnPlayName() + ' 不可用，本局由规则 AI（深度 4）代打' +
+            (nnDegradeRecoverable ? '，权重下完就换回网络' : '');
         console.warn('[xuantian] 回退规则 AI:', reason);
     }
     function nnFailNow(reason) {
@@ -2007,6 +2014,13 @@ self.onmessage = function(e) {
             statusMessage.textContent = '🧠 ' + nnPlayName() + ' 首次加载中（约 19 MB，只需一次）…';
         } else if (m.phase === 'ready') {
             nnReady = true; nnInfo = m.info;
+            // 之前只是"没赶上这一手"的回退 ⇒ 现在权重到货，下一手起恢复正常走网络（不改难度按钮）
+            if (nnDisabled && nnDegradeRecoverable) {
+                nnDisabled = false; nnDegradeRecoverable = false; nnWhy = null;
+                if (/代打/.test(statusMessage.textContent))
+                    statusMessage.textContent = '🧠 ' + nnPlayName() + ' 已到货，从下一手起接手';
+                console.log('[xuantian] 到货迟到但赶上了：解除回退');
+            }
             nnBadge(nnTierText(m.info), 'tx-ok');
             console.log('[xuantian] 就绪', m.info);
         } else if (m.phase === 'failed') {
@@ -2148,6 +2162,10 @@ self.onmessage = function(e) {
             worker.postMessage({ state: stateCopy, id: myId, play: playKey });
             if (!nnReady) nnStartRamp();
             nnWatchdog = setTimeout(() => {
+                // 没就绪 = 首次那 8 MB（gzip 后的运行时 + 权重）没在 120 s 内到货：这一手交规则 AI，
+                // 但 Worker 还在后台下 ⇒ 竖起 nnRecoverNext，到货就自愈（已就绪后的"本手超时"不自愈，
+                // 那是这台机器真跑不动 1200 访问，不是网络问题）
+                nnRecoverNext = !nnReady;
                 nnFailNow(nnReady ? '本手超时' : '加载超时（模型没下完，多半是网络或被拦截）');
             }, nnReady ? NN_HARD_WAIT_READY : NN_HARD_WAIT_LOAD);
         });
