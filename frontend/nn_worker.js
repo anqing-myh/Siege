@@ -1,13 +1,17 @@
 /*
  * NN 难度档的 Worker：浏览器内 ONNX 推理 + PUCT 搜索。（「通玄」「大师」都是难度名，模型另有对外名）
- * 对弈权重按难度分两份（3.1.18 起），主线程每条对局消息带 play:'master'|'tongxuan' 指定用哪一份：
- *   通玄 models/xuantian_02.onnx = 内部训练产物 gen008B1 = 对外的 xuantian 02（冠军名按代递增）。
- *   大师 models/qv_v1.onnx = 内部训练产物 gen013_qv（8 轮）。它没被晋升 ⇒ 按规矩不叫 xuantian，徽章上写「qv」。
- *   两份都**用到才下**（只点大师不会下那份 19 MB，只点通玄不会下那 4.5 MB），架构相同 ⇒ 标定一次两边共用。
- * 分析权重 models/analysis_v1.onnx = 内部训练产物 gen013_qv16（3.1.17 起）：**只喂复盘读数，不参与对弈**。
+ * 3.1.19 换代（NOTES §67）：gen013_qv24 过晋升门（对冠军 400 局 55.8% CI[51.3,61.6] p=0.017，
+ * 台账 ΔElo +47 [10,84] 首次跨出 0），挂名 **xuantian 03**；原冠军 gen008B1 退一档去做**大师**。
+ * 对弈权重按难度分两份，主线程每条对局消息带 play:'master'|'tongxuan' 指定用哪一份：
+ *   通玄 models/xuantian_03.onnx = 内部训练产物 gen013_qv24（现役冠军）。
+ *   大师 models/xuantian_02.onnx = 内部训练产物 gen008B1（上一代冠军，xuantian 02）。
+ *   两份都**用到才下**（只点大师不会下那份 19 MB 依赖，只点通玄不会下那 4.5 MB），架构相同 ⇒ 标定一次两边共用。
+ * 分析头**并入冠军**：gen013_qv24 既是通玄的对弈权重，也在池尺上量到 R²=0.604 / MAE=0.299 / 斜率 1.00
+ * （比上一代分析头 qv16 的 0.597 还好一点）⇒ 复盘读数直接读冠军那一份，**不再单独下一份权重**。
+ *   models/analysis_v1.onnx（gen013_qv16）与 models/qv_v1.onnx（gen013_qv，只上线过一天的大师权重）
+ *   就此**下线但留在仓库里当回滚点**，没有任何代码引用 ⇒ 浏览器不会再下载它们。
  * 复盘右条的面积差读数是**纯规则 BFS 归属**算出来的，网络只管左条的胜率；
- * 面积分析头 models/area_v1.onnx（gen008C）因此**下线但留在仓库里当回滚点**，
- * 没有任何代码引用它 ⇒ 浏览器不会再下载它。
+ * 面积分析头 models/area_v1.onnx（gen008C）同样下线留档。
  *
  * 协议：与旧 AI Worker 兼容——收 { state, depth, id, play }，回 { type:'result', value:{moves,wallDir} }。
  *       play 缺省按 'tongxuan' 处理（旧调用点不必一起改）。
@@ -15,15 +19,15 @@
  *       {ping:true} -> {type:'pong', script, deps, loadError}（主线程用它 3 秒内判定 Worker 是否活着）。
  * 复盘：{analyze:true, states:[...], id} -> 每帧一条 {type:'analysis', id, partial:true, index, value}
  *       （value = {solved,pw,ac,over[,rc]}；面板那两条都是**本帧行棋方的静态形势判断**，不搜索：
- *        pw = 分析网络 value 头的胜率（analysis_v1 是 win 口径 ±1/0 ⇒ (v+1)/2 就是概率，见 NOTES §52；
+ *        pw = 冠军网络 value 头的胜率（qv24 是 win 口径 ±1/0 ⇒ (v+1)/2 就是概率，见 NOTES §52；
  *             校准斜率实测 1.00，所以这个数不需要打任何折扣，见下方 ANALYSIS 一节），
  *        ac = 规则 BFS 归属的面积差（格，正=行棋方多；与训练编码 plane 9 同一口径），
  *        over=true 表示这帧已经终局（此时 rc = 真实终局面积差，不是估计），
  *        solved=+1 表示规则已判定（本帧存在一步制胜的着法，与样本无关）），
  *       全部跑完再补一条 {type:'analysis', id, done:true}；
  *       {suggest:true, state, id} -> {type:'suggestion', id, value, meta}（meta.top = 前 3 着法，
- *       meta.pw/ac 同上一行的口径。首选**恒出在冠军那份对弈权重上**，与你这局玩的是哪档无关，
- *       所以复盘时大师档用户可能第一次触发 19 MB 下载——这与改动前"任何复盘都要下 19 MB"相同）。
+ *       meta.pw/ac 同上一行的口径。首选与读数**恒出在冠军那份对弈权重上**，与你这局玩的是哪档无关，
+ *       所以复盘时大师档用户可能第一次触发冠军权重那份下载）。
  * depth 对本 Worker 无意义（NN 用时间预算），收到后忽略。
  *
  * 自适应：初始化时用一次真实搜索标定 ms/访问，据此选档位（budgetMs / simsMax），
@@ -36,7 +40,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v15';
+const REV = 'v16';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -50,12 +54,10 @@ async function fetchChecked(url) {
 async function toBlobUrl(url, type) {
     return URL.createObjectURL(new Blob([await (await fetchChecked(url)).arrayBuffer()], { type }));
 }
-// 对弈权重两份，按难度取（见文件头）：通玄=冠军 xuantian 02，大师=qv。都惰性加载，
-// 只在下第一手/warmup 时按当条消息的 play 取那一份 ⇒ 选大师不会连带下那 19 MB。
-const MODEL_URL = abs(`models/xuantian_02.onnx?rev=${REV}`);
-const MASTER_URL = abs(`models/qv_v1.onnx?rev=${REV}`);
-// 分析头不在 DEPS 里：它是复盘通道第一次用到时才惰性取的（4.3 MB），纯对弈的用户永远不下这个。
-const ANALYSIS_URL = abs(`models/analysis_v1.onnx?rev=${REV}`);
+// 对弈权重两份，按难度取（见文件头）：通玄=冠军 xuantian 03，大师=上一代冠军 xuantian 02。都惰性加载，
+// 只在下第一手/warmup 时按当条消息的 play 取那一份 ⇒ 选大师不会连带下那 19 MB 依赖。
+const MODEL_URL = abs(`models/xuantian_03.onnx?rev=${REV}`);
+const MASTER_URL = abs(`models/xuantian_02.onnx?rev=${REV}`);
 const DEPS = [abs(`ort/ort.wasm.min.js?rev=${REV}`), abs(`siege_engine.js?rev=${REV}`), abs(`nn_ai.js?rev=${REV}`)];
 
 const send = (m) => self.postMessage(m);
@@ -81,15 +83,15 @@ if (!loadError && (!E || !NN || typeof ort === 'undefined')) {
 const MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test((self.navigator && navigator.userAgent) || '');
 
 // 模型对外名（换代时和 index.html 里的同名常量一起改：Worker 是独立作用域，拿不到页面那两个）
-const NN_NAME = 'xuantian 02';       // 通玄（冠军）
-const NN_MASTER_NAME = 'qv';         // 大师（gen013_qv，未晋升 ⇒ 不挂 xuantian）
+const NN_NAME = 'xuantian 03';       // 通玄（现役冠军 gen013_qv24）
+const NN_MASTER_NAME = 'xuantian 02';  // 大师（上一代冠军 gen008B1，退档不退名）
 // play 键 -> 那一份对弈权重。name 只用于报错时点名（徽章上的名字由页面拼，一处定义）。
 const PLAY = {
     master: { url: MASTER_URL, name: NN_MASTER_NAME },
     tongxuan: { url: MODEL_URL, name: NN_NAME }
 };
 // 档位：按标定到的 ms/访问（含树开销）从上往下取第一个满足的档。
-// 这里只报档位，不报模型名 —— 徽章上的「xuantian 02·极」由页面拼，名字只有一处定义。
+// 这里只报档位，不报模型名 —— 徽章上的「xuantian 03·极」由页面拼，名字只有一处定义。
 const TIERS = [
     { name: '极', maxMsPerSim: 3,   budgetMs: 3600, simsMax: 1200 },   // 1200 = 训练/自博弈/arena 的统一口径
     { name: '高', maxMsPerSim: 8,   budgetMs: 2600, simsMax: 700 },
@@ -97,21 +99,15 @@ const TIERS = [
     { name: '初', maxMsPerSim: 1e9, budgetMs: 2400, simsMax: 140 }
 ];
 
-// 对弈网络按档位各存一份（'master'/'tongxuan'，用到才下）。net 是冠军那份的别名：
-// 复盘首选、以及"分析头加载失败时读数的回落"都只认冠军，不跟着难度走。
+// 对弈网络按难度各存一份（'master'/'tongxuan'，用到才下）。复盘一律 ensurePlay('tongxuan')：
+// 首选与读数只认冠军，不跟着难度走。
 const nets = {};
-let net = null;
 let plan = TIERS[TIERS.length - 1];
 let calibrated = 0;         // 已标定出的 ms/访问；两份对弈网络同架构 ⇒ 标一次两边共用
 let initPromise = null;
 let initFailed = false;
 
-// 复盘读数用的分析头（gen013_qv16）：见下方 ensureAnalysis 为什么与对弈网络分开。
-let netAn = null;
-let anPromise = null;
-let anError = null;
-
-// 一份 ORT 配置三处用（两档对弈网络各按需加载、分析头惰性载）：环境（wasmPaths/线程/日志级别）在 initOrt 里全局设好。
+// 一份 ORT 配置两处用（两档对弈网络各按需加载）：环境（wasmPaths/线程/日志级别）在 initOrt 里全局设好。
 async function loadNet(url, label) {
     const buf = await (await fetchChecked(url)).arrayBuffer();
     if (buf.byteLength < 1e6) throw new Error(label + '文件异常 ' + buf.byteLength);
@@ -123,39 +119,25 @@ async function loadNet(url, label) {
 }
 
 /*
- * 为什么复盘的胜率不读对弈网络那一个头（实测在同一批 800 组、同一个终局目标 zWin 上量的，
- * engine/ruler_head.js ⇒ logs/ruler_g13_qv16.txt / ruler_g13.txt）：
- *   qv16（=analysis_v1）  R²=0.597  MAE=0.304  斜率 1.00
- *   gen008B1（=对弈头）   R²=0.510  MAE=0.352  斜率 0.84
- * 斜率才是关键：0.84 = 过自信，它把领先与落后的差距整体夸大 ~19%，读起来"大优/危险"都比实际夸张；
- * 1.00 意味着 (v+1)/2 直接就是概率，前端一行折扣都不用打。对弈仍走 xuantian_02 —— 强度由 arena 判，
- * 跟读数准不准是两件事，换对弈网络的结论还没出（NOTES §63）。
- * 加载失败 ⇒ 记住 anError、整个会话不再重试，读数静默回落到对弈头（口径退回斜率 0.84，不打扰用户）。
+ * 复盘读数的胜率 = 冠军网络（xuantian 03 = gen013_qv24）的 value 头，与对弈用的是同一份权重。
+ * 实测在同一批 800 组、同一个终局目标 zWin 上量的（engine/ruler_head.js，NOTES §63 一/§67）：
+ *   gen013_qv24  R²=0.604  MAE=0.299  斜率 1.00   ← 现役（对弈 + 读数）
+ *   gen013_qv16  R²=0.597  MAE=0.304  斜率 1.00   ← 上一代分析头，已下线留档
+ *   gen008B1     R²=0.510  MAE=0.352  斜率 0.84   ← 现在的「大师」
+ * 斜率才是关键：0.84 = 过自信，把领先与落后的差距整体夸大 ~19%；1.00 意味着 (v+1)/2 直接就是概率，
+ * 前端一行折扣都不用打。3.1.19 之前"对弈读 A 头、复盘读 B 头"是因为冠军的读数头差，
+ * 现在冠军自己就是读数最准的那份 ⇒ 两份权重并成一份，复盘不再多下一次模型。
  */
-async function ensureAnalysis() {
-    if (anPromise) return anPromise;
-    anPromise = (async () => {
-        try {
-            netAn = await loadNet(ANALYSIS_URL, '分析模型');
-        } catch (err) {
-            anError = (err && err.message) || String(err);
-            netAn = null;
-        }
-        return netAn;
-    })();
-    return anPromise;
-}
 
 /*
  * 取某一档的对弈权重（用到才下）。这里不记住失败：权重下不来这一手就废了，
- * 让本手重试比"一次会话内静默降级"好（分析头那边才是一次性 anError，它只影响读数）。
+ * 让本手重试比"一次会话内静默降级"好。
  */
 async function ensurePlay(which) {
     const key = PLAY[which] ? which : 'tongxuan';
     if (nets[key]) return nets[key];
     const n = await loadNet(PLAY[key].url, PLAY[key].name);
     nets[key] = n;
-    if (key === 'tongxuan') net = n;      // 复盘通道认这个别名（见文件头：首选恒出在冠军上）
     return n;
 }
 
@@ -224,7 +206,7 @@ async function think(state, id, play) {
 
 // ---------- 复盘分析通道 ----------
 /*
- * 与对局通道共用 worker，但复盘读数走另一张网络（netAn，见 ensureAnalysis）；
+ * 与对局通道共用 worker，但复盘读数**恒取冠军那份权重**（与所选难度无关，见 netReadouts）；
  * 结果走自己的 {type:'analysis'|'suggestion'} + id，
  * 主线程按 id 找回调，绝不碰 think() 的 nnAbort/进度条。
  *
@@ -255,16 +237,13 @@ const REPLAY = { budgetMs: 900, simsMax: 400, topK: 3, cPuct: 1.5 };   // 当前
 function ruleAreaDiff(state, p) { return E.areaRaceDiff(state, p); }
 
 // 一帧的网络读数：pw=胜率(0..1，行棋方视角)，ac=规则面积差(格，正=行棋方多)。pw 缺 ⇒ null。
-// rootV 只在"没有分析头、回落对弈网络"时才吃：它是对弈网络那次前向的产物，
-// 拿它当分析头的读数 = 折线一个口径、当前帧另一个口径，两条线会打架。
-// 回落的那份永远是**冠军**（不是当前难度那份）⇒ 折线口径不随难度变；只点过大师的用户此刻会把它取下来。
+// 取的都是**冠军**那份（不是当前难度那份）⇒ 折线口径不随难度变；只点过大师的用户此刻会把它取下来。
+// rootV 的契约：只有"这一搜本身就是冠军权重跑的"才许传进来（现在唯一供者是 runSuggest）⇒ 省一次前向，
+// 且同一局面在折线与当前帧上必然是同一个数。传错网络=rootV 就是别份权重的读数（探针会抓到）。
 async function netReadouts(state, p, rootV) {
-    const an = await ensureAnalysis();
-    let v = an ? NaN : rootV;
+    let v = rootV;
     if (!Number.isFinite(v)) {
-        // 折线通道恒走这里（不搜索就没有 rootV）；suggest 通道带的那次前向属于另一张网络，
-        // 只有回落到"读数与搜索同网络"时才复用 ⇒ 同一局面在折线上和当前帧读数上始终是同一个数。
-        const n = an || net || await ensurePlay('tongxuan');
+        const n = await ensurePlay('tongxuan');
         try { v = (await n.evaluate(state, p)).v; } catch (err) { v = NaN; }
     }
     const pw = Number.isFinite(v) ? Math.min(1, Math.max(0, (v + 1) / 2)) : null;
@@ -331,9 +310,8 @@ async function areaAfter(state, p, action) {
 
 async function searchFrame(state) {
     const p = state.currentPlayer;
-    // 与折线同一张网络：这一遍的产物会**覆盖**静态读数画在同一条线上，混两个口径等于造假。
-    const an = await ensureAnalysis();
-    const n = an || net || await ensurePlay('tongxuan');   // 回落冠军那份，不随难度变
+    // 与折线同一份权重（冠军）：这一遍的产物会**覆盖**静态读数画在同一条线上，混两个口径等于造假。
+    const n = await ensurePlay('tongxuan');
     const r = await NN.chooseAction(state, p, {
         net: n, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, rootDist: true
     });
@@ -379,8 +357,7 @@ async function runSuggest(state, id) {
         net: champ, budgetMs: REPLAY.budgetMs, simsMax: REPLAY.simsMax, cPuct: REPLAY.cPuct, topK: REPLAY.topK
     });
     if (!r) { send({ type: 'suggestion', id, error: '无合法着法' }); return; }
-    // 前三选仍出在对弈网络上（用户看到的"该怎么走"要和引擎实际走得出的一致）；
-    // 读数另取一次前向：有分析头时 r.meta.rootV 是对弈网络的值，不能吃（见 netReadouts）。
+    // 前三选与读数同一份权重（冠军）⇒ 本手这一搜顺带出的 rootV 就是读数，口径天然一致（见 netReadouts）。
     // 本手这一搜顺带出的读数：主线程立刻拿去画形势条，不用等整局判读跑到这一帧。
     // cfg 是给面板标题报口径用的（sims 上限/PUCT 常数/预算），规则判定帧也带上
     const rd = await netReadouts(state, player, r.meta && r.meta.rootV);
