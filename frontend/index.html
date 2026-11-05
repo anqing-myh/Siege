@@ -135,6 +135,9 @@
             gap: 8px;
             align-items: center;
             justify-content: center;
+            /* 3.2.0 加了先后手开关后这一行多出 ~112px：420 宽的手机上原来那三件已经顶满，
+               不换行整页就能横搓（页面里 #board-wrapper 那条注释记过同一个坑）。宽屏一行放得下时这行不起作用。 */
+            flex-wrap: wrap;
         }
         .turn-counter {
             font-size: 15px;
@@ -269,6 +272,44 @@
         }
         .diff-btn:hover { background: #7a6a54; }
         .diff-btn.active:hover { background: #c7a77d; }
+        /* 3.2.0 先后手开关：左=红方(先手)、右=蓝方(后手)，滑块落到所选那一侧 */
+        .side-box {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: #c7a77d;
+            user-select: none;
+        }
+        #pveSideBox { margin-left: auto; }
+        .side-cap { opacity: 0.45; transition: 0.2s; white-space: nowrap; }
+        .side-cap.on { opacity: 1; font-weight: 600; }
+        .side-cap.red { color: #d13f3f; }
+        .side-cap.blue { color: #6ea0d8; }
+        .side-switch {
+            position: relative;
+            width: 40px;
+            height: 20px;
+            flex: none;
+            padding: 0;
+            border: 1px solid #6a5a42;
+            border-radius: 10px;
+            background: #3a3028;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .side-switch .knob {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #d13f3f;
+            transition: left 0.18s ease, background 0.18s ease;
+        }
+        .side-switch.blue .knob { left: 22px; background: #3a6ea5; }
+        .side-switch:hover { border-color: #c7a77d; }
         #aiProgressBar {
             width: 100%;
             max-width: 360px;
@@ -649,6 +690,11 @@
                 <input type="text" id="roomCodeInput" placeholder="输入房间码..." maxlength="5" style="background:#2f2a24;border:1px solid #6a5a42;border-radius:20px;padding:6px 14px;color:#eee;font-size:14px;width:130px;outline:none;text-transform:uppercase;">
                 <button id="joinRoomBtn" class="btn-restart">➕ 加入</button>
                 <button id="createRoomBtn" class="btn-restart">🆕 创建房间</button>
+                <div class="side-box" id="p2pSideBox" style="display:none;">
+                    <span class="side-cap red" data-cap="red">红方</span>
+                    <button class="side-switch" id="p2pSideSwitch" role="switch" aria-checked="false" title="切换先后手（双方同时换边）"><span class="knob"></span></button>
+                    <span class="side-cap blue" data-cap="blue">蓝方</span>
+                </div>
             </div>
             <div style="display:flex;flex-direction:row;gap:10px;align-items:center;justify-content:center;min-height:20px;">
                 <span id="p2pStatus" style="font-size:13px;color:#c7a77d;"></span>
@@ -670,6 +716,11 @@
             <button class="diff-btn active" data-diff="expert">专家</button>
             <button class="diff-btn" data-diff="master">大师</button>
             <button class="diff-btn" data-diff="tongxuan">通玄</button>
+            <div class="side-box" id="pveSideBox">
+                <span class="side-cap red on" data-cap="red">红方</span>
+                <button class="side-switch" id="pveSideSwitch" role="switch" aria-checked="false" title="切换先后手：蓝方=AI 先手"><span class="knob"></span></button>
+                <span class="side-cap blue" data-cap="blue">蓝方</span>
+            </div>
         </div>
     </div>
     <div id="bottomBar">
@@ -698,7 +749,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
-        <br>版本信息：Version 3.1.21 2026-11-05  感谢游玩~
+        <br>版本信息：Version 3.2.0 2026-11-05  感谢游玩~
     </div>
 </div>
 <script>
@@ -717,7 +768,7 @@
 
     // ---- WebSocket 联机状态 ----
     let ws = null;
-    let wsPlayerIndex = null; // 0=房主(红) 1=加入者(蓝)
+    let wsPlayerIndex = null; // 协议身份：0=房主 1=加入者。**不等于颜色**——房主执蓝时两边对调，见 p2pLocalIdx()
     let wsRoomCode = null;
     let wsConnected = false;
 
@@ -2202,6 +2253,29 @@ self.onmessage = function(e) {
     // 难度：'expert'=规则搜索深度3, 'master'=神经网络 xuantian 02, 'tongxuan'=神经网络 xuantian 03（两者都由 nn_worker.js 落子，网络不可用时回规则 AI 深度4）
     let aiDifficulty = 'expert';
 
+    /*
+     * 3.2.0 先后手：引擎索引 **0 = 红方 = 先手 = 左下开局**，1 = 蓝方 = 后手 = 右上开局（规则没变，变的是"本地这位坐哪一边"）。
+     * 人机由玩家自己点（pveHumanIdx）；联机由 `hostBlue` 这一个布尔决定整间房：房主执蓝时房主坐 1、加入者坐 0，
+     * 谁点开关都是翻同一个 hostBlue ⇒ 两边同时换边，不会出现一方以为执红、另一方以为执蓝。
+     * hostBlue 跟着 sync 的 state 走（服务器原样转发 state，不需要动后端）：旧客户端不带这个字段 ⇒ 收到 undefined 当 false。
+     */
+    let pveHumanIdx = 0;
+    let hostBlue = false;
+    let wsOpponentJoined = false;      // 房主要等 opponent_joined 才算"双方都在"，加入者一进来就都在了
+
+    function p2pLocalIdx() {
+        if (wsPlayerIndex !== 0 && wsPlayerIndex !== 1) return 0;
+        return hostBlue ? 1 - wsPlayerIndex : wsPlayerIndex;
+    }
+    // 本地这一侧坐哪个索引；本地双人两边都是人，战绩与读数沿玩家1（索引 0）的旧口径
+    function localIdx() {
+        if (game.mode === 'pve') return pveHumanIdx;
+        if (game.mode === 'p2p') return p2pLocalIdx();
+        return 0;
+    }
+    const sideWord = p => (p === 0 ? '红方' : '蓝方');
+    const firstWord = p => (p === 0 ? '先手' : '后手');
+
     // ---- DOM ----
     const canvas = document.getElementById('boardCanvas');
     const ctx = canvas.getContext('2d');
@@ -2217,6 +2291,11 @@ self.onmessage = function(e) {
     }
     const stepDisplay = document.getElementById('stepDisplay');
     const statusMessage = document.getElementById('statusMessage');
+    // 先后手开关（3.2.0）：人机在难度行最右、联机在创建房间右侧，DOM 拿在别的元素之前 ⇒ 后面的函数不会踩 TDZ
+    const pveSideSwitch = document.getElementById('pveSideSwitch');
+    const p2pSideSwitch = document.getElementById('p2pSideSwitch');
+    const pveSideBox = document.getElementById('pveSideBox');
+    const p2pSideBox = document.getElementById('p2pSideBox');
     const restartBtn = document.getElementById('restartBtn');
     const modeBtns = document.querySelectorAll('.mode-btn');
     const player1Label = document.getElementById('player1Label');
@@ -2241,7 +2320,7 @@ self.onmessage = function(e) {
         if (replay.sim.on) return simAtEnd();   // 模拟着法：红蓝都由人走，所以不看本地玩家、也不看行棋方是谁
         if (replay.active) return false;
         if (game.gameOver) return false;
-        if (game.mode === 'pve') return game.currentPlayer === 0 && !game.aiThinking;
+        if (game.mode === 'pve') return game.currentPlayer === pveHumanIdx && !game.aiThinking;
         if (game.mode === 'pvp') return true;
         if (game.mode === 'p2p') return isLocalPlayerTurn() && !game.aiThinking;
         return false;
@@ -2379,7 +2458,7 @@ self.onmessage = function(e) {
         }
         // 高亮可移动格子
         if (game.phase === 'move' && !game.gameOver && (!replay.active || simAtEnd())) {
-            const isAiTurn = !replay.sim.on && game.mode === 'pve' && game.currentPlayer === 1;
+            const isAiTurn = !replay.sim.on && game.mode === 'pve' && game.currentPlayer !== pveHumanIdx;
             if (!isAiTurn) {
                 const p = game.currentPlayer;
                 const pl = game.players[p];
@@ -2435,8 +2514,15 @@ self.onmessage = function(e) {
     }
 
     // ---- UI ----
+    // 索引 p 那一边叫什么（颜色由徽标负责，这里只管"是您 / 电脑 / 对方"）
+    function sideName(p) {
+        if (game.mode === 'pve') return p === pveHumanIdx ? '您' : '电脑';
+        if (game.mode === 'p2p') return p === p2pLocalIdx() ? '您' : '对方';
+        return '玩家' + (p + 1);
+    }
     function updateUI() {
         updateDifficultyLock();          // 落子后把难度按钮藏掉（只动 display，不碰进度条）
+        renderSideSwitches();            // 先后手开关：跟着难度行一起藏，联机那边跟着房间/落子状态走
         stepDisplay.textContent = game.stepRemaining;
         turnCounter.textContent = '回合 ' + game.turnCount;
         const p = game.currentPlayer;
@@ -2474,18 +2560,16 @@ self.onmessage = function(e) {
             statusMessage.className = 'status-text';
 
         } else if (game.mode === 'pve') {
-            // 人机模式，玩家红色“您”，蓝色“电脑”
-            player1Label.textContent = '您';
+            // 人机模式：玩家这一侧由 pveHumanIdx 决定（默认红=先手），标签跟着它走
+            player1Label.textContent = sideName(0);
             player1Label.style.color = '#d13f3f';
-            player2Label.textContent = '电脑';
+            player2Label.textContent = sideName(1);
             player2Label.style.color = '#3a6ea5';
 
             if (game.gameOver) {
                 let msg = '';
-                if (game.winner === 0) {
-                    msg = '🔥 您获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
-                } else if (game.winner === 1) {
-                    msg = '🔥 电脑获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
+                if (game.winner !== 'draw') {
+                    msg = '🔥 ' + sideName(game.winner) + '获胜！区域 ' + game.players[game.winner].regionSize + ' vs ' + game.players[1 - game.winner].regionSize;
                 } else {
                     msg = '🤝 平局！双方区域相同';
                 }
@@ -2494,7 +2578,7 @@ self.onmessage = function(e) {
                 return;
             }
 
-            let msg = `${p === 0 ? '您' : '电脑'} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
+            let msg = `${sideName(p)} 回合 | ${game.phase === 'move' ? '移动中' : '放墙准备'}`;
             if (game.phase === 'wall' && !isMobile) msg += ' (WASD选方向, 空格确认, Q取消)';
             else if(!isMobile)msg += ' (WASD移动, J放墙)';
             else if(game.phase === 'wall' && isMobile)msg += ' (双击确认放置)';
@@ -2503,29 +2587,18 @@ self.onmessage = function(e) {
             statusMessage.className = 'status-text';
 
         } else if (game.mode === 'p2p') {
-            // 联机模式，“您”与“对方”颜色根据 wsPlayerIndex 分配
-            if (wsPlayerIndex === 0) {
-                // 自己为红色，另一方蓝色
-                player1Label.textContent = '您';
-                player1Label.style.color = '#d13f3f';
-                player2Label.textContent = '对方';
-                player2Label.style.color = '#3a6ea5';
-            } else if (wsPlayerIndex === 1) {
-                // 自己为蓝色，对方红色
-                player1Label.textContent = '对方';
-                player1Label.style.color = '#d13f3f';
-                player2Label.textContent = '您';
-                player2Label.style.color = '#3a6ea5';
-            }
+            // 联机模式：“您”与“对方”按 p2pLocalIdx() 分配（房主执蓝时两边对调）
+            player1Label.textContent = sideName(0);
+            player1Label.style.color = '#d13f3f';
+            player2Label.textContent = sideName(1);
+            player2Label.style.color = '#3a6ea5';
 
-            const names = wsPlayerIndex === 0 ? ['您', '对方'] : ['对方', '您'];
+            const names = [sideName(0), sideName(1)];
 
             if (game.gameOver) {
                 let msg = '';
-                if (game.winner === 0) {
-                    msg = '🔥 ' + names[0] + '获胜！区域 ' + game.players[0].regionSize + ' vs ' + game.players[1].regionSize;
-                } else if (game.winner === 1) {
-                    msg = '🔥 ' + names[1] + '获胜！区域 ' + game.players[1].regionSize + ' vs ' + game.players[0].regionSize;
+                if (game.winner !== 'draw') {
+                    msg = '🔥 ' + names[game.winner] + '获胜！区域 ' + game.players[game.winner].regionSize + ' vs ' + game.players[1 - game.winner].regionSize;
                 } else {
                     msg = '🤝 平局！双方区域相同';
                 }
@@ -2582,12 +2655,13 @@ self.onmessage = function(e) {
     function recordGameResult() {
         const key = getStatsKey();
         if (!stats[key]) return;
-        if (game.winner === 0) {
+        const me = localIdx();
+        if (game.winner === me) {
             stats[key].wins++;
-        } else if (game.winner === 1) {
-            stats[key].losses++;
         } else if (game.winner === 'draw') {
             stats[key].draws++;
+        } else if (game.winner === 1 - me) {
+            stats[key].losses++;
         }
         updateStatsDisplay();
     }
@@ -2714,7 +2788,7 @@ self.onmessage = function(e) {
             syncGameState();
         }
 
-        if (game.mode === 'pve' && game.currentPlayer === 1) {
+        if (game.mode === 'pve' && game.currentPlayer !== pveHumanIdx) {
             setTimeout(() => aiTurn(), 100);
         }
     }
@@ -2808,9 +2882,9 @@ self.onmessage = function(e) {
         const over = checkGameOver();
         drawBoard();
         if (over) {
-            if (game.mode === 'pve' && !replay.active) {
-                if (game.winner === 0) playWinSound();
-                else if (game.winner === 1) playLoseSound();
+            if (game.mode === 'pve' && !replay.active && game.winner !== 'draw') {
+                if (game.winner === pveHumanIdx) playWinSound();
+                else playLoseSound();
             }
             updateUI(); drawBoard();
             if (game.mode === 'p2p') {
@@ -2847,7 +2921,7 @@ self.onmessage = function(e) {
         recordReplayFrame();
         updateUI();
         drawBoard();
-        if (game.mode === 'pve' && game.currentPlayer === 1 && !game.gameOver && !replay.active) {
+        if (game.mode === 'pve' && game.currentPlayer !== pveHumanIdx && !game.gameOver && !replay.active) {
             setTimeout(() => aiTurn(), 100);
         }
     }
@@ -3115,12 +3189,12 @@ self.onmessage = function(e) {
     }
 
     function rpName(p) {
-        if (game.mode === 'pve') return p === 0 ? '红方（你）' : '蓝方（AI）';
+        if (game.mode === 'pve') return sideWord(p) + '（' + (p === pveHumanIdx ? '你' : 'AI') + '）';
         if (game.mode === 'p2p') {
-            if (wsPlayerIndex !== 0 && wsPlayerIndex !== 1) return p === 0 ? '红方' : '蓝方';
-            return p === wsPlayerIndex ? '己方' : '对方';
+            if (wsPlayerIndex !== 0 && wsPlayerIndex !== 1) return sideWord(p);
+            return p === p2pLocalIdx() ? '己方' : '对方';
         }
-        return p === 0 ? '红方' : '蓝方';
+        return sideWord(p);
     }
 
     function fmtMove(mv) {
@@ -3242,7 +3316,8 @@ self.onmessage = function(e) {
         resetSim(true);                                   // 磁带退回整局：上一条模拟尾巴不带进这次复盘
         replay.values = new Array(replay.frames.length).fill(null);
         replay.sugs = new Array(replay.frames.length).fill(null);   // 方案 A：前三选按帧缓存，翻回旧帧不再重算
-        replay.selfIdx = (game.mode === 'p2p' && (wsPlayerIndex === 0 || wsPlayerIndex === 1)) ? wsPlayerIndex : 0;
+        replay.selfIdx = game.mode === 'pve' ? pveHumanIdx
+            : (game.mode === 'p2p' && (wsPlayerIndex === 0 || wsPlayerIndex === 1)) ? p2pLocalIdx() : 0;
         if (wrBarEl) wrBarEl.style.display = 'block';
         if (areaBarEl) areaBarEl.style.display = 'block';
         if (boardRowEl) boardRowEl.classList.add('in-replay');
@@ -3832,9 +3907,9 @@ self.onmessage = function(e) {
             updateUI();
             const over = checkGameOver();
             if (over) {
-                if (game.mode === 'pve') {
-                    if (game.winner === 0) playWinSound();
-                    else if (game.winner === 1) playLoseSound();
+                if (game.mode === 'pve' && game.winner !== 'draw') {
+                    if (game.winner === pveHumanIdx) playWinSound();
+                    else playLoseSound();
                 }
                 updateUI();
                 drawBoard();
@@ -3934,7 +4009,10 @@ self.onmessage = function(e) {
             winner: game.winner,
             mode: 'p2p',
             turnCount: game.turnCount,
-            aiThinking: false
+            aiThinking: false,
+            // 3.2.0：整间房的颜色约定（房主是否执蓝）。服务器原样转发 state ⇒ 不用改后端；
+            // 旧客户端不带这个字段 ⇒ 收端 `!!undefined = false` = 房主执红，与升级前完全一致。
+            hostBlue: hostBlue
         };
     }
 
@@ -3944,6 +4022,7 @@ self.onmessage = function(e) {
             if (state.gameOver) return;
             exitReplay();
         }
+        hostBlue = !!state.hostBlue;      // 谁点了开关都通过同步换边，两边永远不会各以为自己是红
         game.board = state.board;
         game.players = state.players;
         game.currentPlayer = state.currentPlayer;
@@ -3962,6 +4041,44 @@ self.onmessage = function(e) {
         drawBoard();
     }
 
+    /*
+     * 3.2.0 先后手开关：两处同一个约定 —— 滑块在左 = 本地这位执红（先手），在右 = 执蓝（后手）。
+     * 人机改 pveHumanIdx 并重开一盘；联机改的是**整间房**的 hostBlue，所以谁点都是两边同时换边，
+     * 靠 sync 的 state 广播（落第一手之前棋盘还是初形，同步过去不会覆盖对方的东西）。
+     */
+    function paintSide(box, idx) {
+        if (!box) return;
+        box.querySelector('.side-cap.red').classList.toggle('on', idx === 0);
+        box.querySelector('.side-cap.blue').classList.toggle('on', idx === 1);
+        const sw = box.querySelector('.side-switch');
+        sw.classList.toggle('blue', idx === 1);
+        sw.setAttribute('aria-checked', idx === 1 ? 'true' : 'false');
+    }
+    const mySideText = () => '您执' + (p2pLocalIdx() === 0 ? '红' : '蓝') + '（' + firstWord(p2pLocalIdx()) + '）';
+    // 已经落子的判定（原来只在 updateDifficultyLock 里，现在开关与难度行共用同一条线）
+    function gameStartedYet() {
+        return game.gameOver || game.phase !== 'move' || game.stepRemaining < 3 || replay.frames.length > 1;
+    }
+    /*
+     * 难度行与先后手开关共同的"这一局已经开始"判据 —— 按**玩家自己落过子**算，不按棋盘上的第一手算。
+     * 玩家执蓝时 AI（红）先落一手：那一刻要是把整行藏掉，玩家就再没机会换回执红
+     * （点「新游戏」重开也还是 AI 先手，等于开关一按就把颜色锁死到刷新页面为止），所以这一半回合里行和开关都留着。
+     * turnCount 只在索引 1（蓝方）走完一手时 +1（见 endTurn）⇒ 玩家执蓝 ⇒ turnCount>=2 才说明玩家真的落过子了。
+     */
+    function humanPlayedYet() {
+        if (!gameStartedYet()) return false;
+        return pveHumanIdx === 0 || game.turnCount >= 2;
+    }
+    function renderSideSwitches() {
+        paintSide(pveSideBox, pveHumanIdx);
+        paintSide(p2pSideBox, p2pLocalIdx());
+        if (!p2pSideBox) return;
+        const inRoom = game.mode === 'p2p' && !!wsRoomCode && (wsPlayerIndex === 0 || wsPlayerIndex === 1);
+        // 房主这一侧要等对手真的进了房才有"两边"可换；加入者一进来就说明对面已经在
+        const ready = inRoom && (wsPlayerIndex === 1 || wsOpponentJoined);
+        p2pSideBox.style.display = (ready && !gameStartedYet()) ? 'flex' : 'none';
+    }
+
     function syncGameState() {
         if (replay.active) return;   // 回放中的棋盘不是局面，不能当作权威状态广播出去
         if (game.mode === 'p2p' && ws && ws.readyState === WebSocket.OPEN && wsRoomCode) {
@@ -3976,7 +4093,9 @@ self.onmessage = function(e) {
         if (msg.type === 'created') {
             wsRoomCode = msg.roomCode;
             wsPlayerIndex = 0;
-            p2pStatus.textContent = '🏠 房间码: ' + msg.roomCode + ' (等待对手...)';
+            wsOpponentJoined = false;      // 新房间：先得有人进来，才谈得上"换边"
+            hostBlue = false;
+            p2pStatus.textContent = '🏠 房间码: ' + msg.roomCode + ' (等待对手...) · ' + mySideText();
             p2pStatus.style.color = '#f0d4a0';
             copyRoomCodeBtn.style.display = 'inline-block';
             copyRoomCodeBtn.onclick = () => {
@@ -4018,8 +4137,12 @@ self.onmessage = function(e) {
             wsSend({ type: 'sync_request' });
         }
         else if (msg.type === 'opponent_joined') {
-            p2pStatus.textContent = '✅ 对手已加入！游戏开始';
+            wsOpponentJoined = true;       // 房主这才算"两边都在"：先后手开关从这一刻起可用
+            p2pStatus.textContent = '✅ 对手已加入！游戏开始 · ' + mySideText();
             p2pStatus.style.color = '#5cb85c';
+            // 服务器只把消息转给对方，房主自己收不到回音 ⇒ 这里必须主动刷一次，
+            // 否则"两边都到了"这个事实要等到下一次 updateUI 才落到开关的显示上（开关会一直不出现）。
+            updateUI();
             // 房主收到加入通知后，把当前完整棋局同步一次
             if (wsPlayerIndex === 0) {
                 syncGameState();
@@ -4034,11 +4157,8 @@ self.onmessage = function(e) {
         else if (msg.type === 'sync') {
             if (!msg.state) return;
             applyNetworkState(msg.state);
-            if (wsPlayerIndex === 0) {
-                p2pStatus.textContent = '✅ 已同步棋局';
-            } else if (wsPlayerIndex === 1) {
-                p2pStatus.textContent = '✅ 已同步房主棋局';
-            }
+            // 同步是谁发的都行（两边落子后都 sync），所以文案不再假定"房主的棋局"；顺带报自己执什么颜色
+            p2pStatus.textContent = '✅ 已同步棋局 · ' + mySideText();
             p2pStatus.style.color = '#5cb85c';
         }
         else if (msg.type === 'reset_request') {
@@ -4061,12 +4181,16 @@ self.onmessage = function(e) {
             p2pStatus.style.color = '#5cb85c';
         }
         else if (msg.type === 'opponent_left') {
+            wsOpponentJoined = false;      // 只剩一个人：换边没有对象，开关收起来
             p2pStatus.textContent = '⚠️ 对手已离开';
             p2pStatus.style.color = '#ff6b6b';
+            updateUI();                    // 同上：这条只有本端看得见，不刷一次开关会继续挂着
         }
         else if (msg.type === 'room_closed') {
             wsRoomCode = null;
             wsPlayerIndex = null;
+            wsOpponentJoined = false;
+            hostBlue = false;
             p2pStatus.textContent = '房主已离开，房间已解散';
             p2pStatus.style.color = '#ff6b6b';
             updateUI();
@@ -4130,7 +4254,7 @@ self.onmessage = function(e) {
 
     function isLocalPlayerTurn() {
         if (game.mode !== 'p2p') return true;
-        return game.currentPlayer === wsPlayerIndex;
+        return game.currentPlayer === p2pLocalIdx();
     }
 
     function isTypingInRoomCodeInput(e) {
@@ -4276,8 +4400,7 @@ self.onmessage = function(e) {
         const row = document.getElementById('difficultyRow');
         if (!row) return;
         // 走过一步/进入放墙/换过手都算对局已开始（步数从 3 掉下来 = 这一手已经走出去了）
-        const started = game.gameOver || game.phase !== 'move' || game.stepRemaining < 3 || replay.frames.length > 1;
-        row.style.display = (game.mode === 'pve' && !started) ? '' : 'none';
+        row.style.display = (game.mode === 'pve' && !humanPlayedYet()) ? '' : 'none';
     }
     diffBtns.forEach(btn => {
         btn.addEventListener('click', () => {
@@ -4307,6 +4430,27 @@ self.onmessage = function(e) {
         });
     });
 
+    /*
+     * 先后手开关。人机：换边 = 换对手强度之外的另一件事 —— 这一盘的棋谱与"该谁先落子"都变了，
+     * 所以直接重开一盘（resetGame 末尾那个"AI 是该先手就立刻先手"的判断顺带把 AI 的第一手送出去）。
+     * 联机：改的是整间房的 hostBlue，点完立刻同步给对方；第一手之前棋盘还是初形，同步不会覆盖对方的东西。
+     */
+    if (pveSideSwitch) pveSideSwitch.addEventListener('click', () => {
+        if (replay.active) exitReplay();
+        if (game.mode !== 'pve' || humanPlayedYet()) return;
+        pveHumanIdx = 1 - pveHumanIdx;
+        resetGame(false);
+    });
+    if (p2pSideSwitch) p2pSideSwitch.addEventListener('click', () => {
+        if (game.mode !== 'p2p' || !wsRoomCode || gameStartedYet()) return;
+        hostBlue = !hostBlue;
+        syncGameState();
+        updateUI();
+        drawBoard();
+        p2pStatus.textContent = '🔄 已换边：' + mySideText();
+        p2pStatus.style.color = '#f0d4a0';
+    });
+
     modeBtns.forEach(btn => {
         btn.addEventListener('click', () => {
             if (replay.active) exitReplay();
@@ -4324,6 +4468,8 @@ self.onmessage = function(e) {
                 wsConnected = false;
                 wsPlayerIndex = null;
                 wsRoomCode = null;
+                wsOpponentJoined = false;
+                hostBlue = false;
                 resetGame();
             }
         });
@@ -4356,6 +4502,8 @@ self.onmessage = function(e) {
             wsSend({ type: 'leave' }); // 新增类型 leave，服务器可以忽略或做清理
             wsRoomCode = null;
             wsPlayerIndex = null;
+            wsOpponentJoined = false;
+            hostBlue = false;
             p2pStatus.textContent = '⚠️ 已离开原房间';
             p2pStatus.style.color = '#ffcc00';
         }
