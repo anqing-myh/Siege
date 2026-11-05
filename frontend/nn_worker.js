@@ -10,8 +10,9 @@
  * （比上一代分析头 qv16 的 0.597 还好一点）⇒ 复盘读数直接读冠军那一份，**不再单独下一份权重**。
  *   models/analysis_v1.onnx（gen013_qv16）与 models/qv_v1.onnx（gen013_qv，只上线过一天的大师权重）
  *   就此**下线但留在仓库里当回滚点**，没有任何代码引用 ⇒ 浏览器不会再下载它们。
- * 复盘右条的面积差读数是**纯规则 BFS 归属**算出来的，网络只管左条的胜率；
- * 面积分析头 models/area_v1.onnx（gen008C）同样下线留档。
+ * 复盘右条的面积差读数是**两特征线性校准的预报**（3.1.21，NOTES §73）：规则 BFS 归属差 + 冠军 value 头
+ * → 期望最终面积差（格），零新增权重、零额外前向；面积分析头 models/area_v1.onnx（gen008C）下线留档。
+ * 左条（胜率）与右条**共用同一次 value 前向**，所以两条天然同口径，但也天然冗余（见 §72 三）。
  *
  * 协议：与旧 AI Worker 兼容——收 { state, depth, id, play }，回 { type:'result', value:{moves,wallDir} }。
  *       play 缺省按 'tongxuan' 处理（旧调用点不必一起改）。
@@ -21,7 +22,8 @@
  *       （value = {solved,pw,ac,over[,rc]}；面板那两条都是**本帧行棋方的静态形势判断**，不搜索：
  *        pw = 冠军网络 value 头的胜率（qv24 是 win 口径 ±1/0 ⇒ (v+1)/2 就是概率，见 NOTES §52；
  *             校准斜率实测 1.00，所以这个数不需要打任何折扣，见下方 ANALYSIS 一节），
- *        ac = 规则 BFS 归属的面积差（格，正=行棋方多；与训练编码 plane 9 同一口径），
+ *        ac = **期望最终面积差**（格，正=行棋方多）= A0 + A1·规则BFS归属差 + A2·value，见 AREA_CAL；
+ *             拿不到权重时退化成 A1-only 那条（B0 + B1·规则），归属差本身与训练编码 plane 9 同一口径，
  *        over=true 表示这帧已经终局（此时 rc = 真实终局面积差，不是估计），
  *        solved=+1 表示规则已判定（本帧存在一步制胜的着法，与样本无关）），
  *       全部跑完再补一条 {type:'analysis', id, done:true}；
@@ -47,7 +49,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v17';
+const REV = 'v18';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -258,17 +260,55 @@ async function think(state, id, play) {
 const REPLAY = { budgetMs: 900, simsMax: 400, topK: 3, cPuct: 1.5 };   // 当前帧首选：这个必须留树，它答的是"棋"不是"形势"
 
 /*
- * 规则面积差（3.1.15 起取代面积分析头）：口径与判定都在 siege_engine 的 areaRaceDiff 里
+ * 规则面积差：口径与判定都在 siege_engine 的 areaRaceDiff 里
  * （每格判给「BFS 步数更少」的一方，取差；单位=格，正=视角方多；与训练编码 plane 9 同一套邻接）。
- * 为什么不用网络：gen008C 那个面积头跑满 20 轮最好的 R² 只有 +0.064、MAE 12.6 格，而这条免费规则
- * 在同一份数据上与终局面积差的 r=0.275（R²≈0.076）—— 训练它花的钱买不到比它更多的信息。
- * （代价照旧：中盘的终局面积差本身由之后 20+ 次落墙决定，任何"静态"读数都只能解释一小部分，见 §50/§54。）
+ * 3.1.15 起它曾**直接**当面积条读数；3.1.21 起它只是下面那条校准的**一个自变量**（系数 A1）。
+ * 单用它不够：这条免费规则在离策略池上的组内 R² 只有 0.080(ply12) / 0.102(ply24)（交叉验证 0.064 / 0.093），
+ * 而专门为面积训的那只头（gen008C，跑满 20 轮）也只有 +0.064 ⇒ 面积信息的大头不在这条规则里，在 value 头里。
  */
 // 薄封装（不写成 `const ruleAreaDiff = E.areaRaceDiff`）：依赖没挂载时 E 是 undefined，
 // 模块作用域上直接取属性会让整个 Worker 静默死在脚本求值阶段 —— 那正是本文件从头防的那类故障。
 function ruleAreaDiff(state, p) { return E.areaRaceDiff(state, p); }
 
-// 一帧的网络读数：pw=胜率(0..1，行棋方视角)，ac=规则面积差(格，正=行棋方多)。pw 缺 ⇒ null。
+/*
+ * 面积条 = 两特征线性校准的**预报**（3.1.21，NOTES §73）：
+ *   期望最终面积差(格) = A0 + A1·规则归属差(格) + A2·value
+ * value 是冠军网络 value 头那个 ±1 的原始数（不是 (v+1)/2 的胜率）。取不到权重时退化到
+ *   期望最终面积差(格) = B0 + B1·规则归属差(格)
+ * 系数出处：`COEF=1 node engine/area_ruler.js`（实测见 logs/area_calib_coef.log），拟合样本是那批
+ * 757 个离策略局面（每局面平均 20 次独立续弈 ⇒ 组内均值才是这条线的标签）；分桶 CV R²：
+ *   ply=12 双特征 0.129 / 单特征 0.064；ply=24 双特征 0.313 / 单特征 0.093。
+ * 为什么分两桶：**规则的权重随对局进行单调变大**。单特征回归的斜率（格/格）在离策略上是
+ *   ply12=0.18 → ply24=0.31，在池内是 pt18=0.48 → pt30=0.67 → 终局前=0.85；扣掉 value 之后的偏系数 A1
+ *   也跟着走（0.0867 → 0.1024）⇒ 一份全局系数不可能两头都对，18 手前后各配一档。
+ * ⚠ 已知偏差：系数只在 12/24 两个点量过（离策略池就只有这两个点位），尾段（≥30 手；实测中位局长 41）
+ *   规则项的真实权重大于 0.102 ⇒ 最后三分之一的条会**偏平**。要修得再下一批 pt=30/end 的续弈样本，
+ *   那是生成侧的活，本轮不做（"新的数据生成先不要做"）。
+ * 为什么要 +A2·value：纯规则那条免费线在 ply=24 的 CV 只有 0.093，而 value 头单独就能到 0.308
+ *   ⇒ 面积信息的九成在 value 头里，规则项只是补个 tempo（详见 §72 六那张零成本菜单表）。
+ */
+const AREA_CAL = [
+    { below: 18, pair: [-2.69, 0.0867, 14.14], solo: [-1.27, 0.1763] },
+    { below: Infinity, pair: [-0.27, 0.1024, 10.04], solo: [-0.43, 0.3122] }
+];
+
+function plyOf(state, p) {
+    const tc = state.turnCount > 0 ? state.turnCount : 1;
+    return (tc - 1) * 2 + (p === 0 ? 0 : 1);
+}
+
+// 规则项是这条预报的主心骨（两个桶的系数都把它当必要项拟合）⇒ 它算不出来就返回 null，
+// 宁可面板写"未定"也不给一个偏掉截距的数。value 缺才允许退回单特征那条。
+function areaForecast(state, p, ruleCells, v) {
+    if (!Number.isFinite(ruleCells)) return null;
+    const bucket = AREA_CAL.find(b => plyOf(state, p) < b.below) || AREA_CAL[AREA_CAL.length - 1];
+    const cells = Number.isFinite(v)
+        ? bucket.pair[0] + bucket.pair[1] * ruleCells + bucket.pair[2] * v
+        : bucket.solo[0] + bucket.solo[1] * ruleCells;
+    return Math.max(-48, Math.min(48, cells));   // 48 = 主线程 RP_CELL_MAX（Worker 拿不到页面常量，改那边要改这里）
+}
+
+// 一帧的网络读数：pw=胜率(0..1，行棋方视角)，ac=期望最终面积差(格，正=行棋方多)。任一缺 ⇒ null。
 // 取的都是**冠军**那份（不是当前难度那份）⇒ 折线口径不随难度变；只点过大师的用户此刻会把它取下来。
 // rootV 的契约：只有"这一搜本身就是冠军权重跑的"才许传进来（现在唯一供者是 runSuggest）⇒ 省一次前向，
 // 且同一局面在折线与当前帧上必然是同一个数。传错网络=rootV 就是别份权重的读数（探针会抓到）。
@@ -279,9 +319,9 @@ async function netReadouts(state, p, rootV) {
         try { v = (await n.evaluate(state, p)).v; } catch (err) { v = NaN; }
     }
     const pw = Number.isFinite(v) ? Math.min(1, Math.max(0, (v + 1) / 2)) : null;
-    let ac = null;
-    try { ac = ruleAreaDiff(state, p); } catch (err) { /* 单帧算失败不打断整局判读：这帧 ac 留空，面板写"未定"，不编数 */ }
-    return { pw, ac };
+    let rule = null;
+    try { rule = ruleAreaDiff(state, p); } catch (err) { /* 单帧算失败不打断整局判读：这帧 ac 留空，面板写"未定"，不编数 */ }
+    return { pw, ac: areaForecast(state, p, rule, v) };
 }
 
 /*
@@ -325,9 +365,12 @@ async function runAnalyze(states, id) {
 
 /*
  * 整局搜索判读（第二遍）：静态判读先秒出整条线，这一遍在后台逐帧跑一棵 400 访问的树，
- * 把读数替换成"搜索认为的期望"——
- *   胜率 = 根节点访问加权的 Q：V_root = Σ N(s,a)·Q(s,a) / Σ N(s,a)，再 (V+1)/2；
- *   面积 = 同一访问分布下，每个根候选走一步后规则归属差的加权和（纯图运算，一次两 BFS）。
+ * 把**胜率**替换成"搜索认为的期望"：V_root = Σ N(s,a)·Q(s,a) / Σ N(s,a)，再 (V+1)/2。
+ * 面积条**不被这一遍覆盖**（3.1.21）：它的口径是"A0+A1·规则归属 + A2·静态 value"那个线性式，
+ * 系数就是在静态 value 上拟合的 ⇒ 往里灌 V_root 等于拿 A 的尺量 B 的数。实测搜索对面积的增益也只有
+ * CV R² +0.02 这个量级（0.312→0.329，§72 六），换不到"两条各自多跑一遍"的钱。
+ * 唯一保留的例外是规则判定帧（solved）：那时胜负已定，"期望最终面积差"就是被迫那一手走完后的
+ * 规则归属差，是个近乎真值的数，不是估计。
  * 只服务复盘折线/形势条，不参与对弈；终局帧跳过（真值已经在 values 里）。
  */
 async function areaAfter(state, p, action) {
@@ -350,7 +393,7 @@ async function searchFrame(state) {
     if (!r || !r.meta) return null;
     const m = r.meta;
     if (m.solved) {
-        // 规则判定帧：胜率是判定值不是估计；面积给"被迫那一手走完后"的规则归属差
+        // 规则判定帧：胜率是判定值不是估计；面积给"被迫那一手走完后"的规则归属差（见上：这条是近乎真值）
         return { pw: m.solved > 0 ? 1 : 0,
                  ac: m.bestAction != null ? await areaAfter(state, p, m.bestAction) : null,
                  solved: m.solved, searched: true };
@@ -358,14 +401,9 @@ async function searchFrame(state) {
     const dist = m.rootDist || [];
     const tot = dist.reduce((s, x) => s + x.n, 0);
     if (!tot) return null;
-    let vWin = 0, vArea = 0, hasArea = true;
-    for (const x of dist) {
-        const w = x.n / tot;
-        vWin += w * x.q;
-        const a = await areaAfter(state, p, x.a);
-        if (a === null) hasArea = false; else vArea += w * a;
-    }
-    return { pw: (vWin + 1) / 2, ac: hasArea ? vArea : null, searched: true };
+    let vWin = 0;
+    for (const x of dist) vWin += (x.n / tot) * x.q;
+    return { pw: (vWin + 1) / 2, searched: true };
 }
 
 async function runSearchAnalyze(states, id) {
