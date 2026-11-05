@@ -30,9 +30,16 @@
  *       所以复盘时大师档用户可能第一次触发冠军权重那份下载）。
  * depth 对本 Worker 无意义（NN 用时间预算），收到后忽略。
  *
- * 自适应：初始化时用一次真实搜索标定 ms/访问，据此选档位（budgetMs / simsMax），
- * 因此不同机器拿到的是"同一时间预算下该机跑得动的最多访问数"，而不是固定 sims。
+ * 自适应：初始化时用一次真实搜索标定 ms/访问，据此选档位，因此不同机器拿到的是
+ * "3 秒硬限内该机跑得动的最多访问数"，而不是固定 sims。3.1.20 起四档 = 1200 / 800 / 400 / 150 访问，
+ * budgetMs 一律 3000（搜索循环自己卡 80% ⇒ 最坏 2.4 s 返回，加上传递与落子动画也仍在 3 s 内）；
+ * 选档判据也从"固定 ms/访问阈值"改成「实测 ms/访问 × 该档 sims ≤ 2400 ms」，同一台机器同一个答案，
+ * 不必再维护四个魔数。
  * ⚠ 这只作用于**对弈**与**当前帧首选**；复盘折线不搜索（见下方复盘分析通道的注释）。
+ *
+ * 对弈温度（3.1.20，用户为"别被背谱"提的体验项）：按手数分三段 0.50 / 0.25 / 0.05，再按档位缩放，
+ * 只影响**实际落子**（根的访问数分布上采样），不影响复盘的首选/前三选/任何读数 —— 那条路不传 temp。
+ * 详见下方 playTemp()。arena/Elo 那把尺仍是 temp=0 量的，两个口径别混。
  *
  * 任何环节失败（ORT/模型加载、推理异常、无合法着法）都只回 error，
  * 由主线程回退旧 AI Worker——本文件不 import 旧 AI，保持单向依赖。
@@ -40,7 +47,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v16';
+const REV = 'v17';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -92,12 +99,17 @@ const PLAY = {
 };
 // 档位：按标定到的 ms/访问（含树开销）从上往下取第一个满足的档。
 // 这里只报档位，不报模型名 —— 徽章上的「xuantian 03·极」由页面拼，名字只有一处定义。
+// 四档访问数（3.1.20）：顶档 1200 = 训练/自博弈/arena 的统一口径，别往上加 ⇒
+// 1500/2000 那一段实测是"800 以上一条测不出差异的浅坡"（NOTES：n=50 阶梯 1200→1500 = 0±7.5pp、
+// 1200→2000 = +4pp±8pp），买不到棋力，只会吃掉 3 秒的余量、把边缘机器整档挤下去。
+// budgetMs 全部 3000：nn_ai.js 的搜索循环卡 budget*0.8 ⇒ 单手最坏 2.4 s 一定返回。
 const TIERS = [
-    { name: '极', maxMsPerSim: 3,   budgetMs: 3600, simsMax: 1200 },   // 1200 = 训练/自博弈/arena 的统一口径
-    { name: '高', maxMsPerSim: 8,   budgetMs: 2600, simsMax: 700 },
-    { name: '中', maxMsPerSim: 20,  budgetMs: 2600, simsMax: 320 },
-    { name: '初', maxMsPerSim: 1e9, budgetMs: 2400, simsMax: 140 }
+    { name: '极', simsMax: 1200, budgetMs: 3000 },
+    { name: '高', simsMax: 800, budgetMs: 3000 },
+    { name: '中', simsMax: 400, budgetMs: 3000 },
+    { name: '初', simsMax: 150, budgetMs: 3000 }
 ];
+const TIER_FIT_MS = 2400;      // "跑得完"的判据：实测 ms/访问 × 该档 sims ≤ 搜索自己的截止线（3000×0.8）
 
 // 对弈网络按难度各存一份（'master'/'tongxuan'，用到才下）。复盘一律 ensurePlay('tongxuan')：
 // 首选与读数只认冠军，不跟着难度走。
@@ -168,7 +180,7 @@ async function calibrate(n) {
     if (probe && probe.meta && probe.meta.sims >= 5) {
         msPerSim = Math.max(0.2, probe.meta.ms / probe.meta.sims);
     }
-    plan = TIERS.find(t => msPerSim <= t.maxMsPerSim) || TIERS[TIERS.length - 1];
+    plan = TIERS.find(t => msPerSim * t.simsMax <= TIER_FIT_MS) || TIERS[TIERS.length - 1];
     calibrated = msPerSim;
     return msPerSim;
 }
@@ -189,6 +201,25 @@ async function init(which) {
     });
 }
 
+/*
+ * 对弈温度（3.1.20，用户拍板"按手数分三段"）。只作用于**实际落子**的采样，不改搜索、不改任何读数。
+ *   ply < 12        τ=0.50  开局布局本就近似等价；训练数据这一段用的正是 τ_open=1.0 / OPEN_PLIES=12
+ *                          （engine/gen_selfplay.js 同口径），⇒ 网络在这段"习惯"的对手比 0.5 还吵。
+ *   12 ≤ ply < 36   τ=0.25  中盘：走歪一手是亏，不是输。
+ *   ply ≥ 36        τ=0.05  收尾：面积已经基本分完，一步错就是翻脸 ⇒ 基本回到 argmax。
+ * 36 这个界来自实测对局长度（qv24/qv16 vs B1 共 800 局：中位 41、P10 28、P75 46、P90 51、max 70）：
+ * 短于 28 手就打完的那些局是靠"一步制胜 / 全灭保地盘"两条规则判定收尾的，而那两条压根不经过采样。
+ * 再乘 min(1, simsMax/1200)：慢档的访问分布本身就抖（400 访问时次选常占到 20%），同一个 τ 在那边
+ * 会被放大成昏招 ⇒ 弱机器上温度自动收着（1200 档 = 原值，400 档 = 原值的 1/3）。
+ */
+function playTemp(state) {
+    // turnCount 来自消息里的状态快照（主线程 cloneState 出来的）；缺字段就当开局，宁可多给一点多样性
+    const tc = state.turnCount > 0 ? state.turnCount : 1;
+    const ply = (tc - 1) * 2 + (state.currentPlayer === 0 ? 0 : 1);
+    const base = ply < 12 ? 0.50 : ply < 36 ? 0.25 : 0.05;
+    return +(base * Math.min(1, plan.simsMax / 1200)).toFixed(3);
+}
+
 async function think(state, id, play) {
     const player = state.currentPlayer;
     const legal = E.legalActions(state, player);
@@ -196,8 +227,9 @@ async function think(state, id, play) {
     send({ type: 'progress', value: 0.25 });
     // 取不到权重就抛给外层 catch ⇒ 主线程照旧走"回退规则 AI + 徽章说明"，不在这里编一个弱手。
     const n = await ensurePlay(play);
+    const temp = playTemp(state);
     const r = await NN.chooseAction(state, player, {
-        net: n, budgetMs: plan.budgetMs, simsMax: plan.simsMax, cPuct: 1.5
+        net: n, budgetMs: plan.budgetMs, simsMax: plan.simsMax, cPuct: 1.5, temp: temp
     });
     send({ type: 'progress', value: 0.9 });
     if (!r || !r.moves || !r.wallDir) { send({ type: 'error', id, message: '搜索无结果' }); return; }

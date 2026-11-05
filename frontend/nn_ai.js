@@ -10,6 +10,9 @@
  *  - 安全网：(a) 己方一步制胜的着法直接采纳，并在多个致胜着法中取面积差最大者（扩大面积零风险）；
  *    (b) 剔除"走完立即被隔离且己方区域更小"的自困着法；(c) 剔除"对手下一步可制胜"的送杀着法；
  *    (d) 若所有着法都输，则不再搜索，直接选"己方最终区域最大"的着法（保地盘/翻盘资本，不改变胜负）。
+ *    ⇒ 温度永远碰不到这些：它们都是规则判定，压根不经过采样。
+ *  - 温度是**调用方 opt-in**：opts.temp>0 才在根的访问数分布上采样，默认（复盘/首选/判读/标定）仍是 argmax，
+ *    所以"前三手怎么选、读数怎么算"与加温度之前逐字节相同（3.1.20 用户明确要求不动）。
  *    注：绝不主动推迟已到手的胜利——多给对手一手的风险真实，而面积差不影响胜负。
  *  - 推理失败/超时/模型缺失 -> 调用方回退旧 AI Worker（本模块只负责抛错）。
  */
@@ -398,7 +401,30 @@
             const n = ch ? ch.N : -1;
             if (n > bestN) { bestN = n; best = a; }
         }
-        const r = toResult(state, player, best);
+        // 对弈温度：只在调用方给了 temp>0 时按**根访问数分布**采样（AlphaZero 口径 P(a) ∝ N_a^(1/τ)）。
+        // 复盘那条路（首选/前三选/整局判读）不传 temp ⇒ 判定方式一个字节都没变，meta.bestAction 也仍是访问最多者。
+        // 采样只在 safe pool 内进行（自困/送杀已经被上面剔掉），并设访问地板：
+        // 慢档 400 访问时分布本身就抖，让 3% 以下访问的着法参与采样会把随机性放大成昏招。
+        const tau = opts.temp > 0 ? opts.temp : 0;
+        let picked = best;
+        if (tau > 0 && sims > 0) {
+            const floor = Math.max(2, 0.03 * sims);
+            const cand = [];
+            let sum = 0;
+            for (const a of pool) {
+                const ch = root.kids.get(a);
+                const n = ch ? ch.N : 0;
+                if (n < floor && a !== best) continue;
+                const w = Math.pow(Math.max(n, 1e-6), 1 / tau);
+                cand.push({ a: a, w: w }); sum += w;
+            }
+            if (cand.length > 1 && sum > 0) {
+                const rand = opts.rand || Math.random;
+                let x = rand() * sum;
+                for (const c of cand) { x -= c.w; if (x <= 0) { picked = c.a; break; } }
+            }
+        }
+        const r = toResult(state, player, picked);
         if (!r) { // 理论上不该发生：路径重建失败
             const fb = toResult(state, player, pool[0]);
             if (fb) return Object.assign(fb, { meta: { sims, ms: Date.now() - t0, bestAction: pool[0], why: 'pathfix', tn: cnt.tn, tw: cnt.tw, td: cnt.td } });
@@ -406,6 +432,11 @@
         }
         r.meta = { sims, ms: Date.now() - t0, bestAction: best, excluded: legal.length - safe.length,
                    tn: cnt.tn, tw: cnt.tw, td: cnt.td };
+        if (tau > 0) {
+            r.meta.temp = +tau.toFixed(3);
+            r.meta.playedAction = picked;
+            if (picked !== best) r.meta.sampledFrom = best;
+        }
         const topK = opts.topK || 0;
         if (topK > 0 || opts.rootDist) {
             const full = topCandidates(root, pool, ev);
