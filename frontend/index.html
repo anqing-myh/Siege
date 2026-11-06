@@ -749,7 +749,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
-        <br>版本信息：Version 3.2.0 2026-11-05  感谢游玩~
+        <br>版本信息：Version 3.2.1 2026-11-07  感谢游玩~
     </div>
 </div>
 <script>
@@ -2081,7 +2081,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v18';   // 与 nn_worker.js 里的 REV 同步（两档对弈权重与脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v19';   // 与 nn_worker.js 里的 REV 同步（两档对弈权重与脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
