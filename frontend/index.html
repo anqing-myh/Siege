@@ -414,7 +414,7 @@
             font-size: 15px;
             margin: 6px 0 2px 0;
             color: #fff;
-            /* 定高：读数最长那种写法（xuantian 03 估值 + 长昵称 + 两个读数都在）要三行 ⇒ 恒定三行，
+            /* 定高：读数最长那种写法（xuantian 04 估值 + 长昵称 + 两个读数都在）要三行 ⇒ 恒定三行，
                翻到哪一手都不许把下面的按钮顶走 */
             line-height: 1.3;
             height: calc(3 * 1.3em);
@@ -641,7 +641,7 @@
                 <button class="rp-btn" id="rpViewRed">视角：红方</button>
                 <button class="rp-btn" id="rpViewBlue">蓝方</button>
             </div>
-            <div class="rp-sub" id="rpSugHead">xuantian 03 首选</div>
+            <div class="rp-sub" id="rpSugHead">xuantian 04 首选</div>
             <div class="rp-list" id="rpMoves">—</div>
             <div class="rp-actual" id="rpActual"></div>
             <div class="rp-nav">
@@ -754,7 +754,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
-        <br>版本信息：Version 3.2.2 2026-11-07  感谢游玩~
+        <br>版本信息：Version 3.2.3 2026-11-07  感谢游玩~
     </div>
 </div>
 <script>
@@ -1944,9 +1944,9 @@ self.onmessage = function(e) {
     // ---- NN 难度档（大师 / 通玄）的 Web Worker ----
     // 「大师」「通玄」是**难度名**，模型另有对外名：通玄 = NN_NAME（每一代选出来的冠军，
     // xuantian 01 = tongxuan_v1.onnx（gen007A3），xuantian 02 = xuantian_02.onnx（gen008B1，3.1.19 起退到大师档），
-    // xuantian 03 = xuantian_03.onnx（gen013_qv24，现役冠军）），大师 = NN_MASTER_NAME（也是 xuantian 02）。
+    // xuantian 03 = xuantian_03.onnx（gen013_qv24，3.2.3 起下线留档），xuantian 04 = xuantian_04.onnx（gen014_a1，现役冠军）。
     // 换代时改这里 + nn_worker.js 里的同名常量（两处，Worker 是独立作用域拿不到页面这两个）。
-    const NN_NAME = 'xuantian 03';
+    const NN_NAME = 'xuantian 04';
     const NN_MASTER_NAME = 'xuantian 02';
     // 会用网络的两档（专家始终是规则 AI）。徽章/进度条/回退话术都按这个判断，别再写死 'tongxuan'。
     function isNNDiff(d) { return d === 'master' || d === 'tongxuan'; }
@@ -2086,7 +2086,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v19';   // 与 nn_worker.js 里的 REV 同步（两档对弈权重与脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v20';   // 与 nn_worker.js 里的 REV 同步（两档对弈权重与脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -2255,7 +2255,7 @@ self.onmessage = function(e) {
         p2p: { wins: 0, losses: 0, draws: 0 }
     };
 
-    // 难度：'expert'=规则搜索深度3, 'master'=神经网络 xuantian 02, 'tongxuan'=神经网络 xuantian 03（两者都由 nn_worker.js 落子，网络不可用时回规则 AI 深度4）
+    // 难度：'expert'=规则搜索深度3, 'master'=神经网络 xuantian 02, 'tongxuan'=神经网络 xuantian 04（两者都由 nn_worker.js 落子，网络不可用时回规则 AI 深度4）
     let aiDifficulty = 'expert';
 
     /*
@@ -2936,8 +2936,8 @@ self.onmessage = function(e) {
      * frames[k] = 第 k 个"轮到谁"的局面，move = 从这一局面上实际走的那一手（终局帧为 null）。
      * 于是看第 k 帧时：模型首选 = 从 frames[k] 搜出来的前三手（点哪一行就按哪一行画盘），
      * values[k] 也是 frames[k] 的判读结果（{solved,pw,ac,rc,over,tn,tw,td}）。
-     * 两条读数一条来自规则、一条规则+网络混合（都是本帧行棋方视角）：pw = 冠军网络（models/xuantian_03.onnx
-     * = gen013_qv24，3.1.19 起读数与对弈同一份权重）的胜率，
+     * 两条读数一条来自规则、一条规则+网络混合（都是本帧行棋方视角）：pw = 冠军网络（models/xuantian_04.onnx
+     * = gen014_a1，3.1.19 起读数与对弈用同一份权重，3.2.3 起这一份是 xuantian 04）的胜率，
      * ac = **期望最终面积差**（格）= A0 + A1·规则BFS归属差 + A2·value，系数在 nn_worker.js 的 AREA_CAL
      *（3.1.21 起，拟合过程见 engine/area_ruler.js 的 COEF=1 / NOTES §73；3.1.15–3.1.20 是裸的规则归属差）。
      * 左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
@@ -2945,8 +2945,9 @@ self.onmessage = function(e) {
      * ⇒ (v+1)/2 本身就是校准概率，不再是上一代 mix 口径那种"0.7 打底、全盘 |v|≤0.59 全在死区、
      * 反解出来每帧都是 0 格"的死数字（§39/§42 的老账，随 §52 定稿 win 一并作废）；
      * 为什么是这一份（同一批 800 组、同一个终局目标上量的尺，engine/ruler_head.js）：
-     * gen013_qv24 R²=0.604 / MAE=0.299 / **斜率 1.00**，上一代冠军对弈头（xuantian 02）只有 0.510 / 0.352 / 斜率 0.84
-     * ⇒ 那份过自信，把领先与落后的差距整体夸大 ~19%，而斜率 1.00 才说明前端这个 (v+1)/2 一行折扣都不用打；
+     * gen014_a1 R²=0.616 / MAE=0.296 / **斜率 1.01**，上一代冠军 xuantian 03（gen013_qv24）0.604 / 0.299 / 1.00，
+     * 更早的冠军对弈头（xuantian 02）只有 0.510 / 0.352 / 斜率 0.84
+     * ⇒ 那份过自信，把领先与落后的差距整体夸大 ~19%，而斜率≈1 才说明前端这个 (v+1)/2 一行折扣都不用打；
      * 3.1.19 的换代把这两个需求并成一件事：qv24 既是台账上第一个把冠军甩出可分辨区间的对弈权重（§66），
      * 也是同一批尺上读数最准的一份 ⇒ 不必再"对弈读 A 头、复盘读 B 头"。
      * 面积差不再单独下一份分析网络（gen008C 跑满 20 轮 R² 只有 +0.064），也不再"只报当下归属"：

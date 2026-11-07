@@ -1,15 +1,18 @@
 /*
  * NN 难度档的 Worker：浏览器内 ONNX 推理 + PUCT 搜索。（「通玄」「大师」都是难度名，模型另有对外名）
- * 3.1.19 换代（NOTES §67）：gen013_qv24 过晋升门（对冠军 400 局 55.8% CI[51.3,61.6] p=0.017，
- * 台账 ΔElo +47 [10,84] 首次跨出 0），挂名 **xuantian 03**；原冠军 gen008B1 退一档去做**大师**。
+ * 3.2.3 换代（NOTES §84/§85/§86.1）：gen014_a1 过晋升门（对现役冠军 qv24 400 局 58.0% CI[53.8,64.0]
+ * p=8.2e-4，另在两条独立尺上 a1 vs 前冠军 B1 59.0%、a1 vs ai4(open6) 88.5% ⇒ 不是只克现冠军），
+ * 挂名 **xuantian 04**；原冠军 gen013_qv24 退档**不上任何难度**（配方逐字复刻它，只是数据换成 gen014）。
  * 对弈权重按难度分两份，主线程每条对局消息带 play:'master'|'tongxuan' 指定用哪一份：
- *   通玄 models/xuantian_03.onnx = 内部训练产物 gen013_qv24（现役冠军）。
+ *   通玄 models/xuantian_04.onnx = 内部训练产物 gen014_a1（现役冠军）。
  *   大师 models/xuantian_02.onnx = 内部训练产物 gen008B1（上一代冠军，xuantian 02）。
  *   两份都**用到才下**（只点大师不会下那份 19 MB 依赖，只点通玄不会下那 4.5 MB），架构相同 ⇒ 标定一次两边共用。
- * 分析头**并入冠军**：gen013_qv24 既是通玄的对弈权重，也在池尺上量到 R²=0.604 / MAE=0.299 / 斜率 1.00
- * （比上一代分析头 qv16 的 0.597 还好一点）⇒ 复盘读数直接读冠军那一份，**不再单独下一份权重**。
- *   models/analysis_v1.onnx（gen013_qv16）与 models/qv_v1.onnx（gen013_qv，只上线过一天的大师权重）
- *   就此**下线但留在仓库里当回滚点**，没有任何代码引用 ⇒ 浏览器不会再下载它们。
+ * 分析头**并入冠军**：gen014_a1 既是通玄的对弈权重，也在池尺上量到 R²=0.616 / MAE=0.296 / 斜率 1.01
+ * （同一把尺上上一代冠军 qv24 是 0.604 / 0.299 / 1.00，现役大师 B1 只有 0.510 / 0.352 / 0.84）
+ * ⇒ 复盘读数直接读冠军那一份，**不再单独下一份权重**。
+ *   models/analysis_v1.onnx（gen013_qv16）、models/qv_v1.onnx（gen013_qv，只上线过一天的大师权重）
+ *   与 models/xuantian_03.onnx（gen013_qv24，3.1.19~3.2.3 的通玄）就此**下线但留在仓库里当回滚点**，
+ *   没有任何代码引用 ⇒ 浏览器不会再下载它们。
  * 复盘右条的面积差读数是**两特征线性校准的预报**（3.1.21，NOTES §73）：规则 BFS 归属差 + 冠军 value 头
  * → 期望最终面积差（格），零新增权重、零额外前向；面积分析头 models/area_v1.onnx（gen008C）下线留档。
  * 左条（胜率）与右条**共用同一次 value 前向**，所以两条天然同口径，但也天然冗余（见 §72 三）。
@@ -49,7 +52,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v19';
+const REV = 'v20';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -63,9 +66,9 @@ async function fetchChecked(url) {
 async function toBlobUrl(url, type) {
     return URL.createObjectURL(new Blob([await (await fetchChecked(url)).arrayBuffer()], { type }));
 }
-// 对弈权重两份，按难度取（见文件头）：通玄=冠军 xuantian 03，大师=上一代冠军 xuantian 02。都惰性加载，
+// 对弈权重两份，按难度取（见文件头）：通玄=冠军 xuantian 04，大师=上一代冠军 xuantian 02。都惰性加载，
 // 只在下第一手/warmup 时按当条消息的 play 取那一份 ⇒ 选大师不会连带下那 19 MB 依赖。
-const MODEL_URL = abs(`models/xuantian_03.onnx?rev=${REV}`);
+const MODEL_URL = abs(`models/xuantian_04.onnx?rev=${REV}`);
 const MASTER_URL = abs(`models/xuantian_02.onnx?rev=${REV}`);
 const DEPS = [abs(`ort/ort.wasm.min.js?rev=${REV}`), abs(`siege_engine.js?rev=${REV}`), abs(`nn_ai.js?rev=${REV}`)];
 
@@ -92,7 +95,7 @@ if (!loadError && (!E || !NN || typeof ort === 'undefined')) {
 const MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test((self.navigator && navigator.userAgent) || '');
 
 // 模型对外名（换代时和 index.html 里的同名常量一起改：Worker 是独立作用域，拿不到页面那两个）
-const NN_NAME = 'xuantian 03';       // 通玄（现役冠军 gen013_qv24）
+const NN_NAME = 'xuantian 04';       // 通玄（现役冠军 gen014_a1）
 const NN_MASTER_NAME = 'xuantian 02';  // 大师（上一代冠军 gen008B1，退档不退名）
 // play 键 -> 那一份对弈权重。name 只用于报错时点名（徽章上的名字由页面拼，一处定义）。
 const PLAY = {
@@ -100,7 +103,7 @@ const PLAY = {
     tongxuan: { url: MODEL_URL, name: NN_NAME }
 };
 // 档位：按标定到的 ms/访问（含树开销）从上往下取第一个满足的档。
-// 这里只报档位，不报模型名 —— 徽章上的「xuantian 03·极」由页面拼，名字只有一处定义。
+// 这里只报档位，不报模型名 —— 徽章上的「xuantian 04·极」由页面拼，名字只有一处定义。
 // 四档访问数（3.1.20）：顶档 1200 = 训练/自博弈/arena 的统一口径，别往上加 ⇒
 // 1500/2000 那一段实测是"800 以上一条测不出差异的浅坡"（NOTES：n=50 阶梯 1200→1500 = 0±7.5pp、
 // 1200→2000 = +4pp±8pp），买不到棋力，只会吃掉 3 秒的余量、把边缘机器整档挤下去。
@@ -133,12 +136,13 @@ async function loadNet(url, label) {
 }
 
 /*
- * 复盘读数的胜率 = 冠军网络（xuantian 03 = gen013_qv24）的 value 头，与对弈用的是同一份权重。
- * 实测在同一批 800 组、同一个终局目标 zWin 上量的（engine/ruler_head.js，NOTES §63 一/§67）：
- *   gen013_qv24  R²=0.604  MAE=0.299  斜率 1.00   ← 现役（对弈 + 读数）
- *   gen013_qv16  R²=0.597  MAE=0.304  斜率 1.00   ← 上一代分析头，已下线留档
- *   gen008B1     R²=0.510  MAE=0.352  斜率 0.84   ← 现在的「大师」
- * 斜率才是关键：0.84 = 过自信，把领先与落后的差距整体夸大 ~19%；1.00 意味着 (v+1)/2 直接就是概率，
+ * 复盘读数的胜率 = 冠军网络（xuantian 04 = gen014_a1）的 value 头，与对弈用的是同一份权重。
+ * 实测在同一批 800 组、同一个终局目标 zWin 上量的（engine/ruler_head.js，NOTES §63 一/§67/§86.2）：
+ *   gen014_a1      R²=0.616  MAE=0.296  斜率 1.01   ← 现役（对弈 + 读数）
+ *   gen013_qv24    R²=0.604  MAE=0.299  斜率 1.00   ← 上一代冠军（3.2.3 起下线留档）
+ *   gen013_qv16    R²=0.597  MAE=0.304  斜率 1.00   ← 更早的分析头，已下线留档
+ *   gen008B1       R²=0.510  MAE=0.352  斜率 0.84   ← 现在的「大师」
+ * 斜率才是关键：0.84 = 过自信，把领先与落后的差距整体夸大 ~19%；1.01 意味着 (v+1)/2 直接就是概率，
  * 前端一行折扣都不用打。3.1.19 之前"对弈读 A 头、复盘读 B 头"是因为冠军的读数头差，
  * 现在冠军自己就是读数最准的那份 ⇒ 两份权重并成一份，复盘不再多下一次模型。
  */
@@ -281,21 +285,24 @@ function ruleAreaDiff(state, p) { return E.areaRaceDiff(state, p); }
  *   期望最终面积差(格) = A0 + A1·规则归属差(格) + A2·value
  * value 是冠军网络 value 头那个 ±1 的原始数（不是 (v+1)/2 的胜率）。取不到权重时退化到
  *   期望最终面积差(格) = B0 + B1·规则归属差(格)
- * 系数出处：`COEF=1 node engine/area_ruler.js`（实测见 logs/area_calib_coef.log），拟合样本是那批
- * 757 个离策略局面（每局面平均 20 次独立续弈 ⇒ 组内均值才是这条线的标签）；分桶 CV R²：
- *   ply=12 双特征 0.129 / 单特征 0.064；ply=24 双特征 0.313 / 单特征 0.093。
+ * 系数出处：`COEF=1 NETS=<冠军.onnx> node engine/area_ruler.js`——**这两条 pair 系数是绑着冠军 value 头
+ * 拟合的，换冠军就必须重拟**（3.2.3 换成 xuantian 04 = gen014_a1 时重跑，A2 从 14.14/10.04 变到
+ * 15.26/10.98；solo 那两条只吃规则，逐字未变）。拟合样本是那批 757 个离策略局面（每局面平均 20 次
+ * 独立续弈 ⇒ 组内均值才是这条线的标签）；分桶 CV R²（xuantian 04 / xuantian 03 括注）：
+ *   ply=12 双特征 0.141（0.129）/ 单特征 0.064；ply=24 双特征 0.392（0.313）/ 单特征 0.093。
+ *   ⇒ 换代后这条线在两个桶上都更准了一点，但**单特征那条一分没动**：涨的全是 value 头的钱。
  * 为什么分两桶：**规则的权重随对局进行单调变大**。单特征回归的斜率（格/格）在离策略上是
  *   ply12=0.18 → ply24=0.31，在池内是 pt18=0.48 → pt30=0.67 → 终局前=0.85；扣掉 value 之后的偏系数 A1
- *   也跟着走（0.0867 → 0.1024）⇒ 一份全局系数不可能两头都对，18 手前后各配一档。
+ *   也跟着走（0.0743 → 0.0937）⇒ 一份全局系数不可能两头都对，18 手前后各配一档。
  * ⚠ 已知偏差：系数只在 12/24 两个点量过（离策略池就只有这两个点位），尾段（≥30 手；实测中位局长 41）
- *   规则项的真实权重大于 0.102 ⇒ 最后三分之一的条会**偏平**。要修得再下一批 pt=30/end 的续弈样本，
+ *   规则项的真实权重大于 0.094 ⇒ 最后三分之一的条会**偏平**。要修得再下一批 pt=30/end 的续弈样本，
  *   那是生成侧的活，本轮不做（"新的数据生成先不要做"）。
  * 为什么要 +A2·value：纯规则那条免费线在 ply=24 的 CV 只有 0.093，而 value 头单独就能到 0.308
  *   ⇒ 面积信息的九成在 value 头里，规则项只是补个 tempo（详见 §72 六那张零成本菜单表）。
  */
 const AREA_CAL = [
-    { below: 18, pair: [-2.69, 0.0867, 14.14], solo: [-1.27, 0.1763] },
-    { below: Infinity, pair: [-0.27, 0.1024, 10.04], solo: [-0.43, 0.3122] }
+    { below: 18, pair: [-3.25, 0.0743, 15.26], solo: [-1.27, 0.1763] },
+    { below: Infinity, pair: [-0.36, 0.0937, 10.98], solo: [-0.43, 0.3122] }
 ];
 
 function plyOf(state, p) {
