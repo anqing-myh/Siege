@@ -42,7 +42,7 @@
  * 不必再维护四个魔数。
  * ⚠ 这只作用于**对弈**与**当前帧首选**；复盘折线不搜索（见下方复盘分析通道的注释）。
  *
- * 对弈温度（3.2.1，用户拍板收细）：按手数分三段 0.40 / 0.15 / 0.05，再按档位缩放，
+ * 对弈温度（3.2.1 定三段，3.2.4 把开局段 0.40→0.30）：按手数分三段 0.30 / 0.15 / 0.05，再按档位缩放，
  * 只影响**实际落子**（根的访问数分布上采样），不影响复盘的首选/前三选/任何读数 —— 那条路不传 temp。
  * 详见下方 playTemp()。arena/Elo 那把尺仍是 temp=0 量的，两个口径别混。
  *
@@ -52,7 +52,7 @@
 /* global importScripts, self, ort, SiegeEngine, NnAI */
 'use strict';
 
-const REV = 'v20';
+const REV = 'v21';
 // 主线程可能把本文件当源码取回、再用 blob: URL 起 Worker（siege.zeabur.com 上直接 new Worker(url) 会被拦）。
 // blob 脚本的 location.href 是 blob:…，相对路径无法解析，所以约定由主线程注入 __NN_BASE = 页面目录。
 const BASE = self.__NN_BASE || location.href;
@@ -208,10 +208,10 @@ async function init(which) {
 }
 
 /*
- * 对弈温度（3.2.1 用户拍板 0.40 / 0.15 / 0.05，3.1.20 那版是 0.50 / 0.25 / 0.05）。
+ * 对弈温度（3.2.1 定三段 0.40/0.15/0.05；**3.2.4 开局段收到 0.30**，3.1.20 那版是 0.50/0.25/0.05）。
  * 只作用于**实际落子**的采样，不改搜索、不改任何读数。
- *   ply < 12        τ=0.40  开局布局近似等价，留多样性；训练数据这一段用的是 τ_open=1.0 / OPEN_PLIES=12
- *                          （engine/gen_selfplay.js 口径），⇒ 0.40 比生成时的对手更稳，不至于昏招。
+ *   ply < 12        τ=0.30  开局布局近似等价，留一点多样性即可；训练数据这一段用的是 τ_open=1.0 / OPEN_PLIES=12
+ *                          （engine/gen_selfplay.js 口径），⇒ 0.30 比生成时的对手更稳，不至于昏招。
  *   12 ≤ ply < 24   τ=0.15  中盘：走歪一手是亏，不是输。
  *   ply ≥ 24        τ=0.05  后半盘：面积已经开始定型，一步错就是翻脸 ⇒ 基本回到 argmax。
  * 24 这个界（3.2.1 从 36 提前）＝ 双方各下满 12 手之后；实测对局中位 41 手（qv24/qv16 vs B1 共 800 局：
@@ -227,7 +227,7 @@ function playTemp(state) {
     // turnCount 来自消息里的状态快照（主线程 cloneState 出来的）；缺字段就当开局，宁可多给一点多样性
     const tc = state.turnCount > 0 ? state.turnCount : 1;
     const ply = (tc - 1) * 2 + (state.currentPlayer === 0 ? 0 : 1);
-    const base = ply < 12 ? 0.40 : ply < 24 ? 0.15 : 0.05;
+    const base = ply < 12 ? 0.30 : ply < 24 ? 0.15 : 0.05;
     const f = plan.simsMax >= 1200 ? 1 : plan.simsMax >= 800 ? 0.8 : plan.simsMax >= 400 ? 0.6 : 0.4;
     return +(base * f).toFixed(3);
 }
