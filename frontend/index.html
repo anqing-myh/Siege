@@ -754,7 +754,7 @@
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
         <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
-        <br>版本信息：Version 3.2.4 2026-11-08  感谢游玩~
+        <br>版本信息：Version 3.2.5 2026-11-08  感谢游玩~
     </div>
 </div>
 <script>
@@ -2086,7 +2086,7 @@ self.onmessage = function(e) {
 
     let nnAlive = false;
     let nnPingWatchdog = null;
-    const NN_REV = 'v21';   // 与 nn_worker.js 里的 REV 同步（两档对弈权重与脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
+    const NN_REV = 'v22';   // 与 nn_worker.js 里的 REV 同步（两档对弈权重与脚本都靠它破缓存）；改权重/脚本时一起 +1，避免旧缓存被当成新版本
 
     // 脚本"load failed"（error 事件 message 为空）= 脚本没取到，但页面自己的 fetch 可能照样 200，
     // 因为 Worker 脚本走 no-cors 且受 COEP/CORP 约束，而 fetch 走 cors 模式。这里把三条证据拼进徽章：
@@ -2939,7 +2939,8 @@ self.onmessage = function(e) {
      * 两条读数一条来自规则、一条规则+网络混合（都是本帧行棋方视角）：pw = 冠军网络（models/xuantian_04.onnx
      * = gen014_a1，3.1.19 起读数与对弈用同一份权重，3.2.3 起这一份是 xuantian 04）的胜率，
      * ac = **期望最终面积差**（格）= A0 + A1·规则BFS归属差 + A2·value，系数在 nn_worker.js 的 AREA_CAL
-     *（3.1.21 起，拟合过程见 engine/area_ruler.js 的 COEF=1 / NOTES §73；3.1.15–3.1.20 是裸的规则归属差）。
+     *（3.1.21 上线、3.2.5 换系数；这版系数拟合在 gen015 的 64,640 条冻结验证行上，脚本 engine/area_head_eval.js，
+     *  口径与 NOTES §73 那版 ȳ 系数的 R² 不可并排比，见 §90/§91；3.1.15–3.1.20 是裸的规则归属差）。
      * 左条画胜率（50% 为均势），右条画面积差（0 为均势，满条 ±48 格）。
      * 为什么现在敢用网络头：这份权重的 value 目标是 win 口径（±1/0），MSE 的最优解就是 2·p_胜−1
      * ⇒ (v+1)/2 本身就是校准概率，不再是上一代 mix 口径那种"0.7 打底、全盘 |v|≤0.59 全在死区、
