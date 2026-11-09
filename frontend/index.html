@@ -726,8 +726,7 @@
     </div>
     <div id="bottomBar">
         <div id="statsText">战绩：您 0 胜 - 对方 0 胜</div>
-        <button id="analyzeBtn" class="rp-btn" style="display:none">🔍 复盘分析</button>
-        <button id="historyBtn" class="rp-btn">🕘 最近对局</button>
+        <button id="analyzeBtn" class="rp-btn">🔍 复盘分析</button>
         <button id="aboutBtn">关于作者</button>
     </div>
 
@@ -755,8 +754,8 @@
 
     <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
         <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>对局结束后点「复盘分析」：←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
-        <br>版本信息：Version 3.2.5 2026-11-08  感谢游玩~
+        <br>随时点「复盘分析」：默认本模式最新一局，可切最近 3 局 · ←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
+        <br>版本信息：Version 3.3.0 2026-11-10  感谢游玩~
     </div>
 </div>
 <script>
@@ -2535,7 +2534,7 @@ self.onmessage = function(e) {
         turnCounter.textContent = '回合 ' + game.turnCount;
         const p = game.currentPlayer;
         if (analyzeBtn && !replay.active) {
-            analyzeBtn.style.display = (game.gameOver && replay.frames.length > 1) ? '' : 'none';
+            analyzeBtn.style.display = '';
         }
 
         if (game.mode === 'pvp') {
@@ -3497,25 +3496,33 @@ self.onmessage = function(e) {
         b.addEventListener('click', () => switchStoredReplay(i));
         return b;
     }
+    // 标签口径：难度（或玩法）· 本方胜负，例如「通玄·胜」
     function gameTag(i, rec) {
         const w = rec.winner;
         const res = (w === 'draw' || w === null || w === undefined) ? '平' : (rec.selfIdx === w ? '胜' : '负');
-        const rel = i === 0 ? '最新' : ('第' + (i + 1) + '近');
-        return rel + '·' + res;
+        const head = rec.mode === 'pve'
+            ? ({ expert: '专家', master: '大师', tongxuan: '通玄' }[rec.difficulty] || '单人')
+            : (rec.mode === 'p2p' ? '联机' : '双人');
+        return head + '·' + res;
     }
     function renderGameSelector() {
         if (!rpGamesRow) return;
         const list = loadReplayStore()[game.mode] || [];
         rpGamesRow.innerHTML = '';
-        if (!(replay.showLive && replay.liveFrames && replay.liveFrames.length >= 2) && list.length < 2) {
+        // 存档滚动作废时（隐私模式/配额满）才退回当局内存态，避免一格不剩
+        const liveOnly = !list.length && replay.showLive && replay.liveFrames && replay.liveFrames.length >= 2;
+        const n = list.length + (liveOnly ? 1 : 0);
+        if (n < 2) {
             rpGamesRow.style.display = 'none';
             return;
         }
         rpGamesRow.style.display = 'flex';
-        if (replay.showLive && replay.liveFrames && replay.liveFrames.length >= 2) {
-            rpGamesRow.appendChild(makeGameBtn(-1, '本局'));
-        }
-        list.forEach((rec, i) => rpGamesRow.appendChild(makeGameBtn(i, gameTag(i, rec))));
+        if (liveOnly) rpGamesRow.appendChild(makeGameBtn(-1, '本局'));
+        list.forEach((rec, i) => {
+            const b = makeGameBtn(i, gameTag(i, rec));
+            b.title = gameTag(i, rec) + ' · ' + new Date(rec.ts).toLocaleString();
+            rpGamesRow.appendChild(b);
+        });
     }
 
     // 在复盘里换一局：切 frames、换难度/视角口径、重判读
@@ -3545,46 +3552,33 @@ self.onmessage = function(e) {
         refreshAnalysis();
     }
 
-    // 「最近对局」入口：不用先下完一盘也能翻本模式的存档（默认最新一局）
-    function openHistoryReplay() {
+    // 「复盘分析」唯一入口：默认看本模式最新一局存档；没有存档时才退回当局内存态
+    function enterReplay() {
         if (replay.active) return;
+        recordReplayFrame();
         const list = loadReplayStore()[game.mode] || [];
-        if (!list.length) {
-            statusMessage.textContent = '⚠ 本模式还没有存档的对局（下完一局自动存，滚动留最近 3 局）';
+        if (!list.length && replay.frames.length < 2) {
+            statusMessage.textContent = '⚠ 本模式还没有可复盘的对局（下完一局自动存，滚动留最近 3 局）';
             return;
         }
         replay.saved = captureLiveGame();                 // 正在下的这盘收好，退出复盘还原
         replay.active = true;
-        resetSim(true);
-        replay.liveFrames = replay.frames.slice();
-        replay.showLive = false;                          // 历史入口：不把未终局的当局列进去
-        replay.storeIndex = 0;
-        replay.selfIdx = computeSelfIdx();
-        showReplayChrome();
-        renderGameSelector();
-        switchStoredReplay(0);                            // 默认最新一局
-    }
-
-    function enterReplay() {
-        if (replay.active) return;
-        recordReplayFrame();
-        if (replay.frames.length < 2) {
-            statusMessage.textContent = '⚠ 这一局还没攒出可复盘的局面';
-            return;
-        }
-        replay.saved = captureLiveGame();
-        replay.active = true;
         resetSim(true);                                   // 磁带退回整局：上一条模拟尾巴不带进这次复盘
         replay.liveFrames = replay.frames.slice();
-        replay.showLive = true;                           // 当局已结束：选择器里挂「本局」，默认就是它
-        replay.storeIndex = -1;
+        replay.showLive = !list.length && replay.frames.length >= 2;   // 存档可用就不挂「本局」，免得和最新一局重复
         replay.values = new Array(replay.frames.length).fill(null);
         replay.sugs = new Array(replay.frames.length).fill(null);   // 方案 A：前三选按帧缓存，翻回旧帧不再重算
         replay.selfIdx = computeSelfIdx();
         showReplayChrome();
         renderGameSelector();
-        gotoFrame(replay.frames.length - 1);
-        refreshAnalysis();
+        if (list.length) {
+            switchStoredReplay(0);                        // 默认最新一局
+        } else {
+            replay.storeIndex = -1;
+            renderGameSelector();
+            gotoFrame(replay.frames.length - 1);
+            refreshAnalysis();
+        }
     }
 
     function exitReplay() {
@@ -3619,7 +3613,7 @@ self.onmessage = function(e) {
         if (boardRowEl) boardRowEl.classList.remove('in-replay');
         if (rpPanel) rpPanel.style.display = 'none';
         if (rpGamesRow) rpGamesRow.style.display = 'none';
-        if (analyzeBtn) analyzeBtn.style.display = game.gameOver && replay.frames.length > 1 ? '' : 'none';
+        if (analyzeBtn) analyzeBtn.style.display = '';
     }
 
     // 页面作用域里没有"按 state 算连通域"的函数（那份只存在于 AI Worker 的源码字符串里），
@@ -3667,12 +3661,14 @@ self.onmessage = function(e) {
         // 整局判读的生命周期跟"这次任务"走，不跟 replay.seq 走：seq 每翻一手就 +1，
         // 拿它当作废条件会让后面所有帧的回流被丢掉，进度条永远停在用户第一次翻页时的那一格。
         const onPartial = (msg) => {
-            if (msg.index >= 0 && msg.index < replay.values.length) {
+            // 先认任务再落数：换局/退出复盘后 replay.frames 已经换成另一局，按旧下标写会串台甚至越界
+            if (job !== replay.analyzeJob || !replay.active) return;
+            const f = replay.frames[msg.index];
+            if (f && msg.index < replay.values.length) {
                 replay.values[msg.index] = msg.value;
-                simSync(replay.frames[msg.index].key, msg.value, null);
+                simSync(f.key, msg.value, null);
             }
             got++;
-            if (job !== replay.analyzeJob || !replay.active) return;
             setSub('整局判读 ' + got + '/' + states.length + '…');
             renderReplayPanel();
             drawBars();
@@ -3701,9 +3697,10 @@ self.onmessage = function(e) {
         if (nnDisabled) return;
         nnAsk('searchAnalyze', states, 600000, (msg) => {
             if (job !== replay.analyzeJob || !replay.active) return;
-            if (msg.index < 0 || msg.index >= replay.values.length || !msg.value) return;
+            const f = replay.frames[msg.index];
+            if (!f || msg.index >= replay.values.length || !msg.value) return;
             replay.values[msg.index] = Object.assign({}, replay.values[msg.index], msg.value);
-            simSync(replay.frames[msg.index].key, replay.values[msg.index], null);
+            simSync(f.key, replay.values[msg.index], null);
             drawBars();
             drawCurve();
         }).then(() => {
@@ -4054,8 +4051,6 @@ self.onmessage = function(e) {
     }
 
     if (analyzeBtn) analyzeBtn.addEventListener('click', enterReplay);
-    const historyBtn = document.getElementById('historyBtn');
-    if (historyBtn) historyBtn.addEventListener('click', openHistoryReplay);
     if (rpPrev) rpPrev.addEventListener('click', stepPrev);
     if (rpNext) rpNext.addEventListener('click', stepNext);
     if (rpFirst) rpFirst.addEventListener('click', () => gotoFrame(0));
