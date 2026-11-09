@@ -641,6 +641,7 @@
                 <button class="rp-btn" id="rpViewRed">视角：红方</button>
                 <button class="rp-btn" id="rpViewBlue">蓝方</button>
             </div>
+            <div class="rp-nav" id="rpGamesRow" style="display:none" title="本模式最近对局（默认最新一局）"></div>
             <div class="rp-sub" id="rpSugHead">xuantian 04 首选</div>
             <div class="rp-list" id="rpMoves">—</div>
             <div class="rp-actual" id="rpActual"></div>
@@ -726,6 +727,7 @@
     <div id="bottomBar">
         <div id="statsText">战绩：您 0 胜 - 对方 0 胜</div>
         <button id="analyzeBtn" class="rp-btn" style="display:none">🔍 复盘分析</button>
+        <button id="historyBtn" class="rp-btn">🕘 最近对局</button>
         <button id="aboutBtn">关于作者</button>
     </div>
 
@@ -2434,6 +2436,7 @@ self.onmessage = function(e) {
                 game.resultRecorded = true;
             }
             recordReplayFrame();   // 终局这一手不走 endTurn，帧要在这里落
+            if (!replay.active) persistReplayGame();   // 本地滚动存最近 3 局（战绩已在 recordGameResult 落盘）
             return true;
         }
         return false;
@@ -2668,6 +2671,7 @@ self.onmessage = function(e) {
         } else if (game.winner === 1 - me) {
             stats[key].losses++;
         }
+        saveStats();
         updateStatsDisplay();
     }
 
@@ -2973,6 +2977,7 @@ self.onmessage = function(e) {
         'pathfix': '搜索线路重建失败，取候选第一手'
     };
     const replay = { active: false, frames: [], values: [], sugs: [], idx: 0, saved: null, selfIdx: 0, sug: null, sugFrame: -1, pick: 0, seq: 0, analyzeJob: 0, searchDone: true,
+        liveFrames: null, showLive: false, storeIndex: -1,
         sim: { on: false, branch: 0, frames: [], values: [], sugs: [], cache: new Map() } };
 
     const wrBarEl = document.getElementById('wrBar');
@@ -2995,6 +3000,7 @@ self.onmessage = function(e) {
     const rpExit = document.getElementById('rpExit');
     const rpViewRed = document.getElementById('rpViewRed');
     const rpViewBlue = document.getElementById('rpViewBlue');
+    const rpGamesRow = document.getElementById('rpGamesRow');
     const analyzeBtn = document.getElementById('analyzeBtn');
 
     /*
@@ -3036,6 +3042,161 @@ self.onmessage = function(e) {
             winner: game.winner === undefined ? null : game.winner,
             turnCount: game.turnCount
         };
+    }
+
+    /*
+     * ---- 本地缓存：战绩全量 + 每模式最近 3 局的紧凑逐手（纯 localStorage，无数据库/无后端）----
+     * 紧凑编码：一帧的盘面走 getStateKey 的 54 字节 latin1 串（原样存在 f.key 里），逐手压成 2 字节，
+     * turnCount 1 字节；三段各自拼成一个大 Uint8Array 再 base64。一局 ~150 手 ≈ 11KB，3 模式 ×3 局 < 100KB。
+     */
+    const LS_STATS_KEY = 'siege.stats.v1';
+    const LS_REPLAY_KEY = 'siege.replays.v1';
+    const REPLAY_KEEP = 3;
+    const FRAME_KEY_BYTES = 54;
+
+    function bytesToB64(u8) {
+        let s = '';
+        const CH = 4096;
+        for (let i = 0; i < u8.length; i += CH) {
+            const end = Math.min(i + CH, u8.length);
+            for (let j = i; j < end; j++) s += String.fromCharCode(u8[j]);
+        }
+        return btoa(s);
+    }
+    function b64ToBytes(b64) {
+        const s = atob(b64);
+        const u8 = new Uint8Array(s.length);
+        for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i) & 0xff;
+        return u8;
+    }
+
+    // 把内存里的 replay.frames 压成 {n, keys, moves, turns}（三段 base64）
+    function framesToBlob(frames) {
+        const n = frames.length;
+        const keys = new Uint8Array(n * FRAME_KEY_BYTES);
+        const moves = new Uint8Array(n * 2);
+        const turns = new Uint8Array(n);
+        for (let i = 0; i < n; i++) {
+            const f = frames[i];
+            const k = f.key || '';
+            for (let b = 0; b < FRAME_KEY_BYTES; b++) keys[i * FRAME_KEY_BYTES + b] = k.charCodeAt(b) & 0xff;
+            const mv = f.move;
+            if (mv) {
+                moves[i * 2] = mv.to.row * BOARD_SIZE + mv.to.col;
+                const wIdx = mv.wall ? RP_DIRS.indexOf(mv.wall) : 4;
+                moves[i * 2 + 1] = (wIdx & 7) | ((mv.steps & 0x1f) << 3);
+            } else { moves[i * 2] = 0xff; }
+            turns[i] = (f.state.turnCount || 0) & 0xff;
+        }
+        return { n, keys: bytesToB64(keys), moves: bytesToB64(moves), turns: bytesToB64(turns) };
+    }
+
+    // 解码存档帧时算连通域：computeRegionsFromState 在引擎 IIFE 里、这份游戏作用域够不到，
+    // 借用本作用域的 computeRegions()（读全局 game）临时换成这一帧、算完立刻换回（同步，中间不渲染）
+    function rpRegions(state) {
+        const saveB = game.board, saveP = game.players;
+        game.board = state.board; game.players = state.players;
+        const r = computeRegions();
+        game.board = saveB; game.players = saveP;
+        return r;   // [size0, size1, sep]
+    }
+
+    // 反向：从紧凑 blob 还原成 [{ state, key, move }]，够 applyReplayFrame / refreshAnalysis 直接用
+    function blobToFrames(blob) {
+        const n = blob.n | 0;
+        const keys = b64ToBytes(blob.keys);
+        const moves = b64ToBytes(blob.moves);
+        const turns = b64ToBytes(blob.turns);
+        const out = [];
+        for (let i = 0; i < n; i++) {
+            const o = i * FRAME_KEY_BYTES;
+            const cp = keys[o];
+            const players = [
+                { row: keys[o + 1], col: keys[o + 2], regionSize: 0 },
+                { row: keys[o + 3], col: keys[o + 4], regionSize: 0 }
+            ];
+            const board = new Array(BOARD_SIZE);
+            let p = o + 5;
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                board[r] = new Array(BOARD_SIZE);
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const bit = keys[p++];
+                    board[r][c] = { walls: { top: !!(bit & 1), right: !!(bit & 2), bottom: !!(bit & 4), left: !!(bit & 8) } };
+                }
+            }
+            let keyStr = '';
+            for (let b = 0; b < FRAME_KEY_BYTES; b++) keyStr += String.fromCharCode(keys[o + b]);
+            const state = {
+                board, players, currentPlayer: cp, stepRemaining: 3, phase: 'move',
+                movePath: [{ row: players[cp].row, col: players[cp].col }],
+                wallDir: null, gameOver: false, winner: null, turnCount: turns[i]
+            };
+            const [s0, s1, sep] = rpRegions(state);
+            state.players[0].regionSize = s0;
+            state.players[1].regionSize = s1;
+            if (sep) {
+                state.gameOver = true;
+                state.winner = s0 > s1 ? 0 : (s1 > s0 ? 1 : 'draw');
+            }
+            let mv = null;
+            const cell = moves[i * 2];
+            if (cell !== 0xff) {
+                const b1 = moves[i * 2 + 1];
+                const wIdx = b1 & 7;
+                mv = {
+                    player: cp,
+                    to: { row: Math.floor(cell / BOARD_SIZE), col: cell % BOARD_SIZE },
+                    steps: (b1 >> 3),
+                    wall: wIdx === 4 ? null : RP_DIRS[wIdx]
+                };
+            }
+            out.push({ state, key: keyStr, move: mv });
+        }
+        return out;
+    }
+
+    function loadReplayStore() {
+        try {
+            const raw = localStorage.getItem(LS_REPLAY_KEY);
+            if (raw) {
+                const o = JSON.parse(raw);
+                return { pve: o.pve || [], pvp: o.pvp || [], p2p: o.p2p || [] };
+            }
+        } catch (e) {}
+        return { pve: [], pvp: [], p2p: [] };
+    }
+    function saveStats() {
+        try { localStorage.setItem(LS_STATS_KEY, JSON.stringify(stats)); } catch (e) {}
+    }
+    function loadStats() {
+        try {
+            const raw = localStorage.getItem(LS_STATS_KEY);
+            if (raw) {
+                const o = JSON.parse(raw);
+                for (const k in stats) if (o[k]) {
+                    stats[k].wins = o[k].wins | 0;
+                    stats[k].losses = o[k].losses | 0;
+                    stats[k].draws = o[k].draws | 0;
+                }
+            }
+        } catch (e) {}
+    }
+    // 一局终局后落盘：紧凑逐手插到队首，滚动只留最近 REPLAY_KEEP 局
+    function persistReplayGame() {
+        try {
+            if (replay.frames.length < 2) return;
+            if (replay.sim && replay.sim.frames.length) return;    // 模拟尾巴没并进真实档案
+            const store = loadReplayStore();
+            const list = store[game.mode] || (store[game.mode] = []);
+            list.unshift({
+                ts: Date.now(), mode: game.mode,
+                difficulty: game.mode === 'pve' ? aiDifficulty : null,
+                winner: game.winner, selfIdx: localIdx(),
+                blob: framesToBlob(replay.frames)
+            });
+            store[game.mode] = list.slice(0, REPLAY_KEEP);
+            localStorage.setItem(LS_REPLAY_KEY, JSON.stringify(store));
+        } catch (e) { /* 配额/无痕模式：尽力而为，存不下不影响对局 */ }
     }
 
     /*
@@ -3305,6 +3466,105 @@ self.onmessage = function(e) {
         applyReplayFrame(kk);
     }
 
+    function captureLiveGame() {
+        return {
+            board: game.board, players: game.players, currentPlayer: game.currentPlayer,
+            stepRemaining: game.stepRemaining, phase: game.phase, movePath: game.movePath,
+            wallDir: game.wallDir, gameOver: game.gameOver, winner: game.winner,
+            mode: game.mode, turnCount: game.turnCount, aiThinking: game.aiThinking,
+            resultRecorded: game.resultRecorded, aiDifficulty
+        };
+    }
+    function computeSelfIdx() {
+        return game.mode === 'pve' ? pveHumanIdx
+            : (game.mode === 'p2p' && (wsPlayerIndex === 0 || wsPlayerIndex === 1)) ? p2pLocalIdx() : 0;
+    }
+    function showReplayChrome() {
+        if (wrBarEl) wrBarEl.style.display = 'block';
+        if (areaBarEl) areaBarEl.style.display = 'block';
+        if (boardRowEl) boardRowEl.classList.add('in-replay');
+        if (rpPanel) rpPanel.style.display = 'flex';
+        if (analyzeBtn) analyzeBtn.style.display = 'none';
+        if (rpViewRow) rpViewRow.style.display = (game.mode === 'pvp') ? 'flex' : 'none';
+    }
+
+    // 选择器按钮：i=-1 = 当局内存态（本局），0.. = 存档（最近 3 局，0 最新）
+    function makeGameBtn(i, label) {
+        const b = document.createElement('button');
+        b.className = 'rp-btn' + (replay.storeIndex === i ? ' best' : '');
+        b.textContent = label;
+        b.title = label;
+        b.addEventListener('click', () => switchStoredReplay(i));
+        return b;
+    }
+    function gameTag(i, rec) {
+        const w = rec.winner;
+        const res = (w === 'draw' || w === null || w === undefined) ? '平' : (rec.selfIdx === w ? '胜' : '负');
+        const rel = i === 0 ? '最新' : ('第' + (i + 1) + '近');
+        return rel + '·' + res;
+    }
+    function renderGameSelector() {
+        if (!rpGamesRow) return;
+        const list = loadReplayStore()[game.mode] || [];
+        rpGamesRow.innerHTML = '';
+        if (!(replay.showLive && replay.liveFrames && replay.liveFrames.length >= 2) && list.length < 2) {
+            rpGamesRow.style.display = 'none';
+            return;
+        }
+        rpGamesRow.style.display = 'flex';
+        if (replay.showLive && replay.liveFrames && replay.liveFrames.length >= 2) {
+            rpGamesRow.appendChild(makeGameBtn(-1, '本局'));
+        }
+        list.forEach((rec, i) => rpGamesRow.appendChild(makeGameBtn(i, gameTag(i, rec))));
+    }
+
+    // 在复盘里换一局：切 frames、换难度/视角口径、重判读
+    function switchStoredReplay(i) {
+        if (!replay.active) return;
+        let frames;
+        if (i === -1) {
+            if (!replay.liveFrames || replay.liveFrames.length < 2) return;
+            frames = replay.liveFrames.slice();
+        } else {
+            const rec = (loadReplayStore()[game.mode] || [])[i];
+            if (!rec) return;
+            if (rec.difficulty) aiDifficulty = rec.difficulty;   // 模型口径随这局的难度切换
+            if (typeof rec.selfIdx === 'number') replay.selfIdx = rec.selfIdx;
+            frames = blobToFrames(rec.blob);
+        }
+        if (frames.length < 2) return;
+        replay.frames = frames;
+        replay.storeIndex = i;
+        resetSim(true);
+        replay.seq++;
+        replay.analyzeJob++;
+        replay.values = new Array(replay.frames.length).fill(null);
+        replay.sugs = new Array(replay.frames.length).fill(null);
+        renderGameSelector();
+        gotoFrame(replay.frames.length - 1);
+        refreshAnalysis();
+    }
+
+    // 「最近对局」入口：不用先下完一盘也能翻本模式的存档（默认最新一局）
+    function openHistoryReplay() {
+        if (replay.active) return;
+        const list = loadReplayStore()[game.mode] || [];
+        if (!list.length) {
+            statusMessage.textContent = '⚠ 本模式还没有存档的对局（下完一局自动存，滚动留最近 3 局）';
+            return;
+        }
+        replay.saved = captureLiveGame();                 // 正在下的这盘收好，退出复盘还原
+        replay.active = true;
+        resetSim(true);
+        replay.liveFrames = replay.frames.slice();
+        replay.showLive = false;                          // 历史入口：不把未终局的当局列进去
+        replay.storeIndex = 0;
+        replay.selfIdx = computeSelfIdx();
+        showReplayChrome();
+        renderGameSelector();
+        switchStoredReplay(0);                            // 默认最新一局
+    }
+
     function enterReplay() {
         if (replay.active) return;
         recordReplayFrame();
@@ -3312,25 +3572,17 @@ self.onmessage = function(e) {
             statusMessage.textContent = '⚠ 这一局还没攒出可复盘的局面';
             return;
         }
-        replay.saved = {
-            board: game.board, players: game.players, currentPlayer: game.currentPlayer,
-            stepRemaining: game.stepRemaining, phase: game.phase, movePath: game.movePath,
-            wallDir: game.wallDir, gameOver: game.gameOver, winner: game.winner,
-            mode: game.mode, turnCount: game.turnCount, aiThinking: game.aiThinking,
-            resultRecorded: game.resultRecorded
-        };
+        replay.saved = captureLiveGame();
         replay.active = true;
         resetSim(true);                                   // 磁带退回整局：上一条模拟尾巴不带进这次复盘
+        replay.liveFrames = replay.frames.slice();
+        replay.showLive = true;                           // 当局已结束：选择器里挂「本局」，默认就是它
+        replay.storeIndex = -1;
         replay.values = new Array(replay.frames.length).fill(null);
         replay.sugs = new Array(replay.frames.length).fill(null);   // 方案 A：前三选按帧缓存，翻回旧帧不再重算
-        replay.selfIdx = game.mode === 'pve' ? pveHumanIdx
-            : (game.mode === 'p2p' && (wsPlayerIndex === 0 || wsPlayerIndex === 1)) ? p2pLocalIdx() : 0;
-        if (wrBarEl) wrBarEl.style.display = 'block';
-        if (areaBarEl) areaBarEl.style.display = 'block';
-        if (boardRowEl) boardRowEl.classList.add('in-replay');
-        if (rpPanel) rpPanel.style.display = 'flex';
-        if (analyzeBtn) analyzeBtn.style.display = 'none';
-        if (rpViewRow) rpViewRow.style.display = (game.mode === 'pvp') ? 'flex' : 'none';
+        replay.selfIdx = computeSelfIdx();
+        showReplayChrome();
+        renderGameSelector();
         gotoFrame(replay.frames.length - 1);
         refreshAnalysis();
     }
@@ -3349,7 +3601,11 @@ self.onmessage = function(e) {
             game.wallDir = s.wallDir; game.gameOver = s.gameOver; game.winner = s.winner;
             game.mode = s.mode; game.turnCount = s.turnCount; game.aiThinking = s.aiThinking;
             game.resultRecorded = s.resultRecorded;
+            if ('aiDifficulty' in s) aiDifficulty = s.aiDifficulty;   // 复盘里换过难度口径（看历史局），退出还原
         }
+        // 换看历史局时 replay.frames 被存档顶替过：退回当局内存态，别把存档帧留在真实历史里
+        if (replay.liveFrames && replay.liveFrames.length) replay.frames = replay.liveFrames;
+        replay.liveFrames = null; replay.showLive = false; replay.storeIndex = -1;
         hideReplayUI();
         updateUI();
         drawBoard();
@@ -3362,6 +3618,7 @@ self.onmessage = function(e) {
         if (areaBarEl) areaBarEl.style.display = 'none';
         if (boardRowEl) boardRowEl.classList.remove('in-replay');
         if (rpPanel) rpPanel.style.display = 'none';
+        if (rpGamesRow) rpGamesRow.style.display = 'none';
         if (analyzeBtn) analyzeBtn.style.display = game.gameOver && replay.frames.length > 1 ? '' : 'none';
     }
 
@@ -3797,6 +4054,8 @@ self.onmessage = function(e) {
     }
 
     if (analyzeBtn) analyzeBtn.addEventListener('click', enterReplay);
+    const historyBtn = document.getElementById('historyBtn');
+    if (historyBtn) historyBtn.addEventListener('click', openHistoryReplay);
     if (rpPrev) rpPrev.addEventListener('click', stepPrev);
     if (rpNext) rpNext.addEventListener('click', stepNext);
     if (rpFirst) rpFirst.addEventListener('click', () => gotoFrame(0));
@@ -4578,6 +4837,7 @@ self.onmessage = function(e) {
 
     // ---- 启动 ----
     // 注意：需要在 #p2pRoomPanel 隐藏的状态下初始化
+    loadStats();        // 战绩从本地缓存读回（读不到就用默认 0）
     resetGame();
 })();
 </script>
