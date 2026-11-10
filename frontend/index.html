@@ -8,628 +8,359 @@
     <link rel="icon" sizes="16x16 32x32 48x48" href="favicon.ico" type="image/x-icon">
     <meta name="description" content="和好友在线联机或人机对战的回合制棋类游戏，创建房间即可对战，无需下载。">
     <style>
-        * { box-sizing: border-box; user-select: none; }
-        body {
-            background: #2d2d2d;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-            color: #eee;
-            overflow-x: hidden;
+        :root {
+            color-scheme: dark;
+            --bg: #111514;
+            --surface: #1b201f;
+            --surface-raised: #232a27;
+            --line: rgba(211, 192, 151, .16);
+            --gold: #d6b77d;
+            --gold-light: #f2dfb5;
+            --text: #eeeae0;
+            --muted: #a6afa7;
+            --red: #ed8580;
+            --blue: #86b5e4;
         }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            min-height: 100svh;
+            padding: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text);
+            background: radial-gradient(ellipse at 15% 5%, #2b3027 0, transparent 48%),
+                        radial-gradient(ellipse at 95% 95%, #29251d 0, transparent 45%), var(--bg);
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-size: 14px;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        button, input { font: inherit; }
+        button { user-select: none; -webkit-tap-highlight-color: transparent; }
+        button, .rp-move.pick, summary { touch-action: manipulation; }
+        button {
+            cursor: pointer;
+            transition: background-color .18s ease, border-color .18s ease,
+                        color .18s ease, box-shadow .18s ease, transform .18s ease;
+        }
+        button:focus-visible, input:focus-visible, summary:focus-visible, .rp-move.pick:focus-visible {
+            outline: 2px solid var(--gold-light);
+            outline-offset: 4px;
+        }
+        button:disabled { cursor: default; opacity: .42; transform: none; }
+        ::selection { color: #171b18; background: var(--gold-light); }
         .game-container {
-            background: #3e3e3e;
-            border-radius: 24px;
-            padding: 30px 40px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+            container-type: inline-size;
+            width: min(100%, 1080px);
+            padding: 30px;
             display: flex;
             flex-direction: column;
             align-items: center;
+            gap: 18px;
+            background: linear-gradient(145deg, rgba(37, 44, 39, .97), rgba(23, 28, 26, .99));
+            border: 1px solid var(--line);
+            border-radius: 26px;
+            box-shadow: 0 28px 90px #0006, inset 0 1px 0 #ffffff07;
         }
-        h1 {
-            margin: 0 0 10px 0;
-            font-weight: 400;
-            letter-spacing: 6px;
-            color: #c7a77d;
-            text-shadow: 0 2px 4px #1a1a1a;
-            font-size: 28px;
-        }
-        .mode-select {
+        .site-header {
+            width: 100%;
             display: flex;
-            gap: 20px;
-            margin: 10px 0 20px 0;
+            justify-content: space-between;
+            align-items: center;
+            gap: 24px;
+            padding-bottom: 22px;
+            border-bottom: 1px solid var(--line);
+        }
+        .brand { display: flex; align-items: center; gap: 16px; }
+        .brand-mark {
+            position: relative; width: 52px; height: 52px; flex: none;
+            border: 1px solid #d6b77d5c; border-radius: 13px;
+            background: linear-gradient(135deg, #d6b77d1a, #d6b77d03);
+        }
+        .brand-mark::before {
+            content: ''; position: absolute; inset: 11px;
+            border-top: 3px solid var(--gold); border-right: 3px solid var(--gold);
+        }
+        .brand-mark::after {
+            content: ''; position: absolute; inset: 20px 21px 11px 11px;
+            border-left: 3px solid var(--gold); border-bottom: 3px solid var(--gold);
+        }
+        .brand-mark i { position: absolute; width: 7px; height: 7px; border-radius: 50%; }
+        .brand-mark .mark-red { left: 10px; bottom: 10px; background: var(--red); }
+        .brand-mark .mark-blue { right: 10px; top: 10px; background: var(--blue); }
+        .eyebrow { color: var(--gold); font-size: 10px; letter-spacing: .24em; font-weight: 600; }
+        h1 { margin: 0; font-size: 32px; font-weight: 600; line-height: 1.3; letter-spacing: .2em; }
+        .title-latin { margin-left: 10px; font-size: 13px; font-weight: 400; letter-spacing: .23em; color: var(--muted); }
+        .header-aside { text-align: right; }
+        .header-aside p { margin: 0 0 6px; color: #d4d7ca; font-size: 14px; letter-spacing: .12em; }
+        .header-meta { color: var(--muted); font-size: 11px; letter-spacing: .1em; }
+        .header-meta b { padding: 0 8px; color: #8f805f; font-weight: 400; }
+        .mode-select {
+            width: min(100%, 510px); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 5px; padding: 5px; background: #111713; border: 1px solid var(--line); border-radius: 15px;
         }
         .mode-btn {
-            background: #5a4a3a;
-            border: none;
-            color: #eee;
-            padding: 10px 28px;
-            border-radius: 30px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: 0.2s;
-            font-weight: 500;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            display: flex; gap: 8px; align-items: center; justify-content: center;
+            min-height: 43px; padding: 10px 8px; border: 1px solid transparent;
+            border-radius: 10px; color: var(--muted); background: transparent;
+            white-space: nowrap; font-size: 14px; font-weight: 500;
         }
-        .mode-btn.active {
-            background: #c7a77d;
-            color: #2d2d2d;
-            box-shadow: 0 0 12px #c7a77d;
+        .ui-icon { width: 17px; height: 17px; flex: none; vertical-align: middle; }
+        .mode-btn.active { background: linear-gradient(135deg, #e4c993, #c5a26a); color: #24271e; box-shadow: 0 3px 12px #0003; }
+        #boardRow {
+            display: flex; align-items: flex-start; justify-content: center;
+            gap: 12px; max-width: 100%; min-width: 0;
         }
-        .mode-btn:hover { transform: scale(1.02); }
         .board-wrapper {
-            /* --cell：棋盘边长（一处定义，媒体查询里改这一个变量，坐标标号的格子跟着一起缩） */
-            --cell: 420px;
-            --gutter: 16px;
-            background: #b4956a;
-            padding: 18px;
-            border-radius: 18px;
-            box-shadow: inset 0 0 10px #4a3c2a, 0 10px 20px rgba(0,0,0,0.5);
+            --cell: 420px; --gutter: 16px;
             display: grid;
             grid-template-columns: var(--gutter) var(--cell);
             grid-template-rows: var(--gutter) var(--cell);
+            flex: none; padding: 18px; border-radius: 18px;
+            background: linear-gradient(135deg, #bca078, #8b6b46);
+            box-shadow: inset 0 1px 1px #fff5, inset 0 -3px 4px #3c281e66,
+                        0 14px 28px #0005, 0 0 0 1px #d7ba8452;
+            user-select: none;
         }
-        /* 行列号：首选着法报的是 (row,col)，所以在左边标 row、上边标 col，都是 0 起 */
         .coord { display: flex; }
         .coord-top { grid-area: 1 / 2; }
         .coord-left { grid-area: 2 / 1; flex-direction: column; }
-        .coord span {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            font-weight: 700;
-            color: #5a4028;
-        }
+        .coord span { flex: 1; display: flex; align-items: center; justify-content: center; color: #44331f; font-size: 11px; font-weight: 700; }
+        canvas { display: block; touch-action: manipulation; cursor: default; }
         #boardCanvas {
-            grid-area: 2 / 2;
-            width: var(--cell);
-            height: var(--cell);
-        }
-        canvas {
-            display: block;
-            width: 420px;
-            height: 420px;
-            touch-action: manipulation;
-            background: #d9c8a6;
-            border-radius: 10px;
-            box-shadow: 0 0 0 2px #6a5a42;
-            cursor: default;
+            grid-area: 2 / 2; width: var(--cell); height: var(--cell);
+            background: #d9c8a6; border-radius: 7px; box-shadow: 0 0 0 1px #594126, 0 2px 5px #39281d66;
         }
         .info-panel {
-            margin-top: 20px;
-            width: 100%;
-            max-width: 560px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            background: #4d4235;
-            border-radius: 40px;
-            padding: 12px 24px;
-            box-shadow: inset 0 2px 6px #1e1a16;
+            width: min(100%, 570px); min-width: 0;
+            display: flex; flex-direction: column; gap: 16px; padding: 18px;
+            border: 1px solid var(--line); border-radius: 16px; background: #11171380;
         }
-        .info-top-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: nowrap;
-            gap: 10px;
+        .info-top-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .info-left { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; min-width: 0; }
+        .info-item { display: flex; align-items: center; gap: 7px; white-space: nowrap; font-size: 13px; }
+        .player-badge { display: inline-block; width: 10px; height: 10px; flex: none; border-radius: 50%; }
+        .badge-red { background: var(--red); box-shadow: 0 0 0 4px #ed85800c; }
+        .badge-blue { background: var(--blue); box-shadow: 0 0 0 4px #86b5e40c; }
+        #player1Label { color: var(--red); }
+        #player2Label { color: var(--blue); }
+        .step-count { min-width: 24px; color: var(--gold-light); font-size: 22px; font-weight: 600; line-height: 1.2; text-align: center; font-variant-numeric: tabular-nums; }
+        .btn-group { display: flex; gap: 8px; }
+        .btn-restart, .rp-btn, #aboutBtn, #closeAboutBtn {
+            min-height: 36px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 9px;
+            color: #e1e4da; background: #29312b; font-size: 12px; font-weight: 500;
         }
-        .info-bottom-row {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-        .p2p-room-panel {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            padding: 6px 0;
-        }
-        .p2p-row {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-            justify-content: center;
-            /* 3.2.0 加了先后手开关后这一行多出 ~112px：420 宽的手机上原来那三件已经顶满，
-               不换行整页就能横搓（页面里 #board-wrapper 那条注释记过同一个坑）。宽屏一行放得下时这行不起作用。 */
-            flex-wrap: wrap;
-        }
-        .turn-counter {
-            font-size: 15px;
-            color: #f0d4a0;
-            background: #2f2a24;
-            padding: 6px 18px;
-            border-radius: 30px;
-            white-space: nowrap;
-            min-width: 70px;
-            text-align: center;
-            flex-shrink: 0;
-        }
-        .status-text-wrapper {
-            flex: 1;
-            display: flex;
-            justify-content: center;
-            overflow: hidden;
-        }
-        .btn-group { display: flex; gap: 8px; flex-shrink: 0; }
-        .info-left {
-            display: flex;
-            gap: 30px;
-            align-items: center;
-            flex-wrap: nowrap;
-            flex-shrink: 0;
-        }
-        .info-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            white-space: nowrap;
-        }
-        .player-badge {
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            border: 2px solid #222;
-        }
-        .badge-red { background: #d13f3f; }
-        .badge-blue { background: #3a6ea5; }
-        .step-count {
-            font-size: 22px;
-            font-weight: 700;
-            color: #f0d4a0;
-            min-width: 30px;
-            text-align: center;
-        }
-        .status-text {
-            font-size: 15px;
-            color: #e8dccc;
-            background: #2f2a24;
-            padding: 6px 18px;
-            border-radius: 30px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .btn-restart {
-            background: #7a6a54;
-            border: none;
-            color: #eee;
-            padding: 8px 24px;
-            border-radius: 30px;
-            font-size: 15px;
-            cursor: pointer;
-            transition: 0.2s;
-            font-weight: 500;
-            white-space: nowrap;
-        }
-        .btn-restart:hover { background: #9a8a70; }
-        .win-message {
-            font-size: 18px;
-            font-weight: 600;
-            padding: 6px 20px;
-            border-radius: 40px;
-            background: #2f5a3a;
-            color: #d4edda;
-            box-shadow: 0 0 12px #2f5a3a;
-        }
-        .footer {
-            margin-top: 12px;
-            font-size: 13px;
-            color: #888;
-            text-align: center;
-        }
+        #restartBtn { color: var(--gold-light); background: #d6b77d13; border-color: #d6b77d42; }
+        .info-bottom-row { display: flex; align-items: center; gap: 10px; padding-top: 13px; border-top: 1px solid var(--line); }
+        .turn-counter { flex: none; color: var(--gold); font-size: 12px; font-variant-numeric: tabular-nums; }
+        .status-text-wrapper { display: flex; flex: 1; min-width: 0; }
+        .status-text { color: #d3dacf; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+        .win-message { padding: 6px 12px; border: 1px solid #86c6a054; border-radius: 8px; background: #294334; color: #d3efdc; font-size: 14px; font-weight: 600; }
+        .p2p-room-panel { display: flex; flex-direction: column; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); }
+        .p2p-row { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
         #roomCodeInput {
-            user-select: text;
-            -webkit-user-select: text;
+            min-height: 38px; width: 132px; max-width: 100%; padding: 8px 12px;
+            border: 1px solid #d6b77d4d; border-radius: 9px; color: var(--gold-light); background: #111713;
+            text-transform: uppercase; letter-spacing: .1em; font-size: 13px;
+            user-select: text; -webkit-user-select: text;
         }
-        #bottomBar {
-            margin-top: 16px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 16px;
-            font-size: 14px;
-        }
-        #aiControlBar {
-            margin-top: 10px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 6px;
-            width: 100%;
-        }
+        #roomCodeInput::placeholder { color: var(--muted); letter-spacing: 0; }
+        #aiControlBar { display: flex; flex-direction: column; align-items: stretch; gap: 10px; width: min(100%, 570px); min-width: 0; }
         #difficultyRow {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-wrap: wrap;
-            gap: 10px;
-            font-size: 14px;
-            color: #c7a77d;
+            display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 7px;
+            padding: 12px; border: 1px solid var(--line); border-radius: 14px;
+            background: #d6b77d05; color: var(--muted); font-size: 12px;
         }
-        .tx-info { font-size: 12px; opacity: 0.9; max-width: 100%; }
-        .tx-ok { color: #8fd08f; }
-        .tx-warn { color: #e0c080; }
-        .tx-bad { color: #e08a8a; }
-        .diff-btn {
-            background: #5a4a3a;
-            border: none;
-            color: #eee;
-            padding: 5px 18px;
-            border-radius: 20px;
-            font-size: 14px;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-        .diff-btn.active {
-            background: #c7a77d;
-            color: #2d2d2d;
-        }
-        .diff-btn:hover { background: #7a6a54; }
-        .diff-btn.active:hover { background: #c7a77d; }
-        /* 3.2.0 先后手开关：左=红方(先手)、右=蓝方(后手)，滑块落到所选那一侧 */
-        .side-box {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 13px;
-            color: #c7a77d;
-            user-select: none;
-        }
+        .diff-btn { min-height: 34px; padding: 6px 13px; border: 1px solid transparent; border-radius: 8px; background: #30372c; color: #d2d7ca; font-size: 12px; }
+        .diff-btn.active { color: var(--gold-light); background: #d6b77d1c; border-color: #d6b77d60; }
+        .side-box { display: flex; align-items: center; gap: 7px; font-size: 11px; user-select: none; }
         #pveSideBox { margin-left: auto; }
-        .side-cap { opacity: 0.45; transition: 0.2s; white-space: nowrap; }
+        .side-cap { opacity: .58; white-space: nowrap; transition: opacity .18s; }
         .side-cap.on { opacity: 1; font-weight: 600; }
-        .side-cap.red { color: #d13f3f; }
-        .side-cap.blue { color: #6ea0d8; }
-        .side-switch {
-            position: relative;
-            width: 40px;
-            height: 20px;
-            flex: none;
-            padding: 0;
-            border: 1px solid #6a5a42;
-            border-radius: 10px;
-            background: #3a3028;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-        .side-switch .knob {
-            position: absolute;
-            top: 2px;
-            left: 2px;
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            background: #d13f3f;
-            transition: left 0.18s ease, background 0.18s ease;
-        }
-        .side-switch.blue .knob { left: 22px; background: #3a6ea5; }
-        .side-switch:hover { border-color: #c7a77d; }
-        #aiProgressBar {
-            width: 100%;
-            max-width: 360px;
-            height: 6px;
-            background: #3a3028;
-            border-radius: 3px;
-            overflow: hidden;
-            display: none;
-        }
-        #aiProgressFill {
-            height: 100%;
-            background: linear-gradient(90deg, #c7a77d, #e8c99a);
-            border-radius: 3px;
-            width: 0%;
-            transition: width 0.15s ease;
-        }
-
-        #statsText {
-            color: #f0d4a0;
-        }
-
-        /* ---- 复盘分析 ---- */
-        #boardRow {
-            display: flex;
-            align-items: flex-start;
-            justify-content: center;
-            gap: 14px;
-        }
-        /* 两条形势条：左=模型胜率，右=期望最终面积差（规则归属+网络 value 线性校准）。都用 canvas 是为了和棋盘同一套像素绘制 */
-        #wrBar, #areaBar {
-            display: none;
-            width: 46px;
-            height: 420px;
-            background: #3a332b;
-            border-radius: 8px;
-            box-shadow: 0 0 0 2px #6a5a42;
-        }
-        #valueCurve {
-            display: block;
-            width: 100%;
-            height: 88px;
-            background: #2f2a24;
-            border-radius: 8px;
-            box-shadow: none;
-            cursor: pointer;
-            margin: 2px 0 2px 0;
-        }
-        .rp-curve-wrap { margin-top: auto; flex-shrink: 0; }
-        .rp-legend {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            font-size: 11px;
-            color: #c7a77d;
-            margin-top: 8px;
-        }
-        .rp-legend i {
-            display: inline-block;
-            width: 20px;
-            border-top: 2px solid #d13f3f;
-            margin-right: 4px;
-            vertical-align: middle;
-        }
-        .rp-legend i.dash { border-top-style: dashed; border-top-color: #f0d4a0; }
+        .side-cap.red { color: var(--red); }
+        .side-cap.blue { color: var(--blue); }
+        .side-switch { position: relative; width: 40px; height: 22px; flex: none; padding: 0; border: 1px solid #d6b77d40; border-radius: 20px; background: #101612; }
+        .side-switch .knob { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--red); transition: left .18s ease, background-color .18s ease; }
+        .side-switch.blue .knob { left: 21px; background: var(--blue); }
+        #aiProgressBar { display: none; width: 100%; height: 4px; overflow: hidden; background: #101612; border-radius: 6px; }
+        #aiProgressFill { width: 0%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #987b49, var(--gold-light)); transition: width .15s ease; }
+        .tx-info { font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+        .tx-ok { color: #a7d4ab; } .tx-warn { color: #e0c080; } .tx-bad { color: #f19b93; }
+        #bottomBar { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; width: min(100%, 570px); }
+        #statsText { flex: 1 1 100%; color: var(--muted); font-size: 12px; text-align: center; font-variant-numeric: tabular-nums; }
+        #analyzeBtn { color: var(--gold-light); border-color: #d6b77d47; }
+        #aboutBtn { color: var(--muted); background: transparent; }
+        .table-note { width: min(100%, 570px); padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; }
+        .game-container:has(#boardRow.in-replay) .table-note { display: none; }
+        .note-title { margin: 0 0 10px; color: var(--gold); font-size: 11px; font-weight: 600; letter-spacing: .15em; }
+        .table-note p { display: flex; gap: 14px; margin: 5px 0; color: var(--muted); font-size: 12px; }
+        .table-note strong { color: #dce0d5; font-weight: 500; flex: none; }
+        #wrBar, #areaBar { display: none; flex: none; width: 36px; height: 420px; margin-top: 34px; background: #222b24; border-radius: 8px; box-shadow: 0 0 0 1px var(--line); }
         #analysisPanel {
-            display: none;
-            flex-direction: column;
-            width: 300px;
-            align-self: stretch;
-            background: #4d4235;
-            border-radius: 18px;
-            padding: 12px 14px;
-            box-shadow: inset 0 2px 6px #1e1a16;
-            font-size: 13px;
-            color: #e8dccc;
-            /* 面板里东西多（读数+首选+导航+折线），高度不够时宁可滚动，也不能把"退出复盘"挤出可视区 */
-            overflow-y: auto;
+            display: none; flex-direction: column; align-self: stretch; flex: 0 0 300px;
+            width: 300px; min-width: 0; padding: 16px 14px; border: 1px solid var(--line);
+            border-radius: 16px; background: #11171399; color: #dce0d5; font-size: 13px;
+            overflow-y: auto; scrollbar-width: thin; scrollbar-color: #76684b transparent;
         }
-        #analysisPanel .rp-head {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 8px;
-            color: #f0d4a0;
-            font-weight: 600;
-        }
-        #analysisPanel .rp-nav {
-            display: flex;
-            gap: 6px;
-            margin: 8px 0;
-            flex-wrap: wrap;
-        }
-        #analysisPanel .rp-foot {
-            /* 模拟着法 / 退出复盘 同排：折行会把面板顶高一行，按钮也就跟着抖动 ⇒ 这行锁死不折 */
-            flex-wrap: nowrap;
-        }
-        #analysisPanel .rp-foot .rp-btn {
-            white-space: nowrap;
-            padding: 5px 9px;
-        }
-        #analysisPanel .rp-val {
-            font-size: 15px;
-            margin: 6px 0 2px 0;
-            color: #fff;
-            /* 定高：读数最长那种写法（xuantian 04 估值 + 长昵称 + 两个读数都在）要三行 ⇒ 恒定三行，
-               翻到哪一手都不许把下面的按钮顶走 */
-            line-height: 1.3;
-            height: calc(3 * 1.3em);
-            overflow: hidden;
-        }
-        #analysisPanel .rp-sub {
-            font-size: 12px;
-            opacity: 0.85;
-            margin-bottom: 8px;
-            line-height: 1.3;
-            height: calc(2 * 1.3em);
-            overflow: hidden;
-        }
-        #analysisPanel .rp-list {
-            margin: 4px 0 0 0;
-            /* 恒定"三选齐全"的高度。终局帧/规则判定帧只有一句话时不塌行，多出来的两行就是留白
-               （用户点名要的效果：上面这块不许随内容伸缩） */
-            height: calc(3 * (2 * 1.45em + 12px + 4px));
-            overflow-y: auto;
-        }
+        #analysisPanel .rp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; color: var(--gold-light); font-size: 14px; font-weight: 600; }
+        #rpFrameNo { padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
+        #analysisPanel .rp-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+        #analysisPanel .rp-foot { flex-wrap: nowrap; margin-bottom: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+        #analysisPanel .rp-foot .rp-btn { padding: 5px 8px; white-space: nowrap; }
+        #analysisPanel .rp-val { height: calc(3 * 1.3em); margin: 6px 0 2px; overflow: hidden; color: var(--text); font-size: 15px; line-height: 1.3; }
+        #analysisPanel .rp-sub { height: calc(2 * 1.3em); margin-bottom: 8px; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.3; }
+        #analysisPanel .rp-list { height: calc(3 * (2 * 1.45em + 12px + 4px)); margin: 4px 0 0; overflow-y: auto; }
         #analysisPanel .rp-move {
-            background: #3a332b;
-            border-radius: 10px;
-            padding: 6px 8px;
-            margin: 0 0 4px 0;
-            line-height: 1.45;
-            white-space: normal;
-            word-break: break-word;
-            /* 一行着法固定占两行字高（实测三选正好两行；真超了就省略号收尾，不许撑高列表） */
-            height: calc(2 * 1.45em + 12px);
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            height: calc(2 * 1.45em + 12px); margin: 0 0 4px; padding: 6px 8px;
+            border-radius: 8px; background: #242d26; line-height: 1.45;
+            white-space: normal; word-break: break-word; overflow: hidden;
         }
-        #analysisPanel .rp-move.best { background: #52452f; }
-        /* 前三选都能点：点谁就按谁画棋盘，所以选中项要一眼看出来 */
-        #analysisPanel .rp-move.pick { cursor: pointer; border-left: 3px solid #6b5c42; }
-        #analysisPanel .rp-move.pick:hover { background: #4a4033; }
-        #analysisPanel .rp-move.sel { border-left-color: #ffcc00; background: #5a4a2e; }
-        #analysisPanel .rp-actual {
-            color: #c7a77d;
-            font-size: 12px;
-            margin-top: 6px;
-            line-height: 1.3;
-            height: calc(2 * 1.3em);
-            overflow: hidden;
-        }
-        .rp-btn {
-            background: #5a4a3a;
-            border: none;
-            color: #eee;
-            padding: 5px 10px;
-            border-radius: 16px;
-            font-size: 13px;
-            cursor: pointer;
-        }
-        .rp-btn:hover { background: #7a6a54; }
-        .rp-btn:disabled { opacity: 0.4; cursor: default; }
-        .rp-btn.rp-exit { background: #6a4a4a; }
-        .rp-btn.best { background: #c7a77d; color: #2d2d2d; }
-
-        #aboutBtn,
-        #closeAboutBtn {
-            padding: 6px 12px;
-            background:#7a6a54;
-            color:#eee;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-        }
-
-        .modal-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.55);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 999;
-        }
-
-        .modal-box {
-            background: #fff;
-            color: #333;
-            padding: 20px;
-            border-radius: 10px;
-            max-width: 320px;
-            max-height: 82vh;
-            display: flex;
-            flex-direction: column;
-            text-align: left;
-        }
-        /* 正文单独滚动：标题与「关闭」始终看得见，往里加内容不必改布局（内容高最多占 82vh 的剩余部分） */
-        .modal-body {
-            overflow-y: auto;
-            min-height: 0;
-            margin: 0 0 14px;
-            padding-right: 10px;
-            scrollbar-width: thin;
-            scrollbar-color: #b9b9b9 transparent;
-        }
-        .modal-body::-webkit-scrollbar { width: 8px; }
-        .modal-body::-webkit-scrollbar-thumb { background: #b9b9b9; border-radius: 4px; }
-        .modal-body::-webkit-scrollbar-track { background: transparent; }
-        .modal-box h3 { margin-top: 0; }
+        #analysisPanel .rp-move.best { background: #363526; }
+        #analysisPanel .rp-move.pick { cursor: pointer; border-left: 3px solid #747058; }
+        #analysisPanel .rp-move.sel { border-left-color: var(--gold-light); background: #d6b77d24; }
+        #analysisPanel .rp-actual { height: calc(2 * 1.3em); margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.3; overflow: hidden; }
+        .rp-btn { min-height: 30px; padding: 5px 9px; font-size: 11px; }
+        .rp-btn.best { color: var(--gold-light); background: #d6b77d22; border-color: #d6b77d60; }
+        .rp-btn.rp-exit { color: #f0b3ab; background: #c7685712; border-color: #c7685738; }
+        .rp-curve-wrap { margin-top: auto; padding-top: 8px; flex-shrink: 0; }
+        .rp-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 10px; margin: 0 0 8px; color: var(--muted); font-size: 10px; }
+        .rp-legend i { display: inline-block; width: 14px; margin-right: 4px; border-top: 2px solid #d13f3f; vertical-align: middle; }
+        .rp-legend i.dash { border-top-style: dashed; border-top-color: #f0d4a0; }
+        #valueCurve { width: 100%; height: 88px; border-radius: 8px; background: #161c17; cursor: pointer; }
+        .footer { width: 100%; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; text-align: center; }
+        .keyboard-guide { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 6px 16px; }
+        .keyboard-guide span { white-space: nowrap; }
+        kbd { display: inline-block; min-width: 21px; margin-right: 4px; padding: 1px 5px; border: 1px solid #d6b77d33; border-bottom-width: 2px; border-radius: 5px; color: #d9ddcf; background: #111713; font: 10px/1.6 'Segoe UI', sans-serif; }
+        .touch-guide { margin: 10px 0; color: #8f9b90; }
+        .guide-details { margin: 10px auto; max-width: 620px; }
+        .guide-details summary { cursor: pointer; color: #b7beaf; }
+        .guide-details p { margin: 7px 0; line-height: 1.9; }
+        .site-footer { margin-top: 14px; color: #818e82; font-size: 10px; letter-spacing: .04em; }
+        .site-footer span { margin: 0 7px; color: #647064; }
+        .modal-overlay { position: fixed; inset: 0; z-index: 999; display: flex; align-items: center; justify-content: center; padding: 20px; background: #080d0bd6; backdrop-filter: blur(10px); }
+        .modal-box { display: flex; flex-direction: column; width: 100%; max-width: 460px; max-height: 82vh; max-height: 82svh; padding: 26px; border: 1px solid #d6b77d45; border-radius: 20px; background: #202822; color: #d6ddd1; box-shadow: 0 24px 80px #0008; text-align: left; }
+        .modal-box h3 { margin: 0 0 16px; color: var(--gold-light); font-size: 20px; font-weight: 600; }
+        .modal-body { overflow-y: auto; min-height: 0; margin-bottom: 18px; padding-right: 10px; font-size: 13px; line-height: 1.9; user-select: text; }
+        .modal-body p { margin: 0 0 13px; }
+        .modal-body, #analysisPanel { scrollbar-width: thin; scrollbar-color: #76684b transparent; }
+        .modal-body::-webkit-scrollbar { width: 6px; }
+        .modal-body::-webkit-scrollbar-thumb { background: #76684b; border-radius: 4px; }
         .modal-box > button { margin-top: auto; }
-        @media (max-width: 500px) {
-            body {
-                align-items: flex-start;
-                padding-top: 10px;
-            }
-            .game-container {
-                width: 100vw;
-                padding: 12px;
-                border-radius: 0;
-            }
-            .mode-select {
-                gap: 8px;
-                flex-wrap: nowrap;
-            }
-            .mode-btn {
-                padding: 8px 10px;
-                font-size: 13px;
-                white-space: nowrap;
-            }
-            .board-wrapper {
-                padding: 10px;
-                /* 边长按容器内容盒算，不是按视口：.game-container 左右 12×2 + 本盒 padding 10×2 +
-                   标号槽 13 = 57px。以前写 92vw，360 宽的手机上算出 363px 的盒子，整页能横向搓动。 */
-                --cell: min(calc(100vw - 57px), 330px);
-                --gutter: 13px;
-            }
-            #boardRow { flex-wrap: wrap; gap: 8px; }
-            #boardRow.in-replay { gap: 6px; }
-            #boardRow.in-replay .board-wrapper { padding: 6px; --cell: min(72vw, 300px); --gutter: 11px; }
-            /* 复盘时棋盘让出宽度，给两条形势条留出那一行（--cell 已在上头改小，画布跟着它走） */
-            #wrBar, #areaBar { width: 26px; height: min(92vw, 330px); }
-            #boardRow.in-replay #wrBar, #boardRow.in-replay #areaBar { width: 18px; height: min(72vw, 300px); }
-            #analysisPanel { width: 100%; align-self: auto; }
-            canvas {
-                /* 画布只认 --cell：以前这里把同一个尺寸又抄了一遍，改一处漏一处 */
-                width: var(--cell);
-                height: var(--cell);
-            }
-            #wrBar, #areaBar, #valueCurve { width: revert-layer; }
+        #closeAboutBtn { min-height: 40px; color: #24271e; background: var(--gold); border-color: var(--gold); }
+        @media (hover: hover) {
+            .mode-btn:not(.active):hover { color: var(--text); background: #29312b; }
+            .btn-restart:hover, .rp-btn:hover, #aboutBtn:hover { background: #3a4235; border-color: #d6b77d66; }
+            .diff-btn:hover { color: var(--gold-light); background: #d6b77d22; border-color: #d6b77d60; }
+            .side-switch:hover { border-color: var(--gold); }
+            #analysisPanel .rp-move.pick:hover { background: #394233; }
+            #analysisPanel .rp-move.sel:hover { background: #d6b77d30; }
+            #closeAboutBtn:hover { background: var(--gold-light); }
+        }
+        @media (min-width: 1000px) {
+            #boardRow.in-replay { gap: 10px; }
+            #boardRow.in-replay .board-wrapper { --cell: min(420px, calc(100cqw - 454px)); }
+            #boardRow.in-replay #wrBar, #boardRow.in-replay #areaBar { height: min(420px, calc(100cqw - 454px)); }
+            .game-container:not(:has(#boardRow.in-replay)) { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 18px 30px; align-items: start; }
+            .game-container:not(:has(#boardRow.in-replay)) .site-header { grid-column: 1 / -1; }
+            .game-container:not(:has(#boardRow.in-replay)) .mode-select { grid-column: 1; grid-row: 2; width: 472px; justify-self: center; }
+            .game-container:not(:has(#boardRow.in-replay)) #boardRow { grid-column: 1; grid-row: 3 / 7; justify-self: center; }
+            .game-container:not(:has(#boardRow.in-replay)) .info-panel { grid-column: 2; grid-row: 2 / 4; }
+            .game-container:not(:has(#boardRow.in-replay)) .info-left { width: 100%; justify-content: space-between; gap: 8px; }
+            .game-container:not(:has(#boardRow.in-replay)) .btn-group { width: 100%; }
+            .game-container:not(:has(#boardRow.in-replay)) .btn-group button { flex: 1; }
+            .game-container:not(:has(#boardRow.in-replay)) .info-bottom-row { flex-wrap: wrap; }
+            .game-container:not(:has(#boardRow.in-replay)) .status-text-wrapper { flex-basis: 100%; }
+            .game-container:not(:has(#boardRow.in-replay)) #aiControlBar { grid-column: 2; grid-row: 4; }
+            .game-container:not(:has(#boardRow.in-replay)) #pveSideBox { flex-basis: 100%; margin: 5px 0 0; justify-content: center; }
+            .game-container:not(:has(#boardRow.in-replay)) #bottomBar { grid-column: 2; grid-row: 5; padding: 14px; border: 1px solid var(--line); border-radius: 14px; }
+            .game-container:not(:has(#boardRow.in-replay)) .table-note { grid-column: 2; grid-row: 6; }
+            .game-container:not(:has(#boardRow.in-replay)) .footer { grid-column: 1 / -1; grid-row: 7; }
+        }
+        @media (max-width: 999px) {
+            body { padding: 24px; align-items: flex-start; }
+            .game-container { padding: 24px; }
+            #boardRow.in-replay { flex-wrap: wrap; width: min(100%, 590px); }
+            #boardRow.in-replay .board-wrapper { --cell: min(420px, calc(100cqw - 148px)); }
+            #boardRow.in-replay #wrBar, #boardRow.in-replay #areaBar { height: min(420px, calc(100cqw - 148px)); }
+            #analysisPanel { flex: 1 1 100%; width: 100%; }
+            .table-note { display: none; }
+        }
+        @media (max-width: 599px) {
+            body { padding: 0; background: #181f19; }
+            .game-container { width: 100%; padding: 22px 14px; gap: 16px; border: 0; border-radius: 0; box-shadow: none; }
+            .site-header { gap: 12px; padding-bottom: 18px; }
+            .brand { gap: 10px; }
+            .brand-mark { width: 44px; height: 44px; border-radius: 11px; }
+            .brand-mark::before { inset: 9px; }
+            .brand-mark::after { inset: 18px 19px 9px 9px; }
+            .brand-mark .mark-red { left: 8px; bottom: 8px; }
+            .brand-mark .mark-blue { right: 8px; top: 8px; }
+            .eyebrow { font-size: 8px; letter-spacing: .16em; }
+            h1 { font-size: 27px; }
+            .title-latin { margin-left: 5px; font-size: 10px; letter-spacing: .12em; }
+            .header-aside p { display: none; }
+            .header-meta { max-width: 90px; font-size: 10px; line-height: 1.8; letter-spacing: 0; }
+            .header-meta b { display: block; height: 0; overflow: hidden; padding: 0; }
+            .mode-select { gap: 3px; padding: 4px; border-radius: 12px; }
+            .mode-btn { gap: 5px; min-height: 42px; padding: 8px 4px; border-radius: 8px; font-size: 12px; }
+            .ui-icon { width: 15px; height: 15px; }
+            .board-wrapper { --cell: min(calc(100cqw - 33px), 420px); --gutter: 13px; padding: 10px; border-radius: 13px; }
             .coord span { font-size: 10px; }
-            .info-panel {
-                padding: 10px 12px;
-                border-radius: 22px;
-                display: inline-flex;   /* 关键升级 */
-                width: auto;
-                margin: 0 auto;
-            }
-            .info-top-row {
-                flex-wrap: nowrap;
-                gap: 8px;
-            }
-            .info-left {
-                gap: 8px;
-                min-width: 0;
-                flex-wrap: nowrap;
-            }
-            .info-item {
-                gap: 4px;
-                white-space: nowrap;
-                font-size: 12px;
-            }
-            .player-badge {
-                width: 14px;
-                height: 14px;
-            }
-            .step-count {
-                font-size: 16px;
-                min-width: 18px;
-            }
-            .btn-group {
-                flex-shrink: 0;
-                gap: 4px;
-            }
-            .btn-restart {
-                padding: 6px 8px;
-                font-size: 12px;
-                white-space: nowrap;
-            }
-            .turn-counter {
-                font-size: 12px;
-                padding: 5px 10px;
-                min-width: 56px;
-            }
-            .status-text {
-                font-size: 12px;
-                padding: 5px 8px;
-            }
-            .footer {
-                font-size: 11px;
-                text-align: center;
-            }
+            #boardRow.in-replay { gap: 8px; }
+            #boardRow.in-replay .board-wrapper { --cell: min(calc(100cqw - 85px), 360px); --gutter: 11px; padding: 7px; }
+            #boardRow.in-replay #wrBar, #boardRow.in-replay #areaBar { width: 18px; height: min(calc(100cqw - 85px), 360px); margin-top: 18px; border-radius: 5px; }
+            .info-panel { gap: 12px; padding: 14px; }
+            .info-left { width: 100%; justify-content: space-between; gap: 6px; }
+            .info-item { font-size: 12px; gap: 6px; }
+            .btn-group { width: 100%; }
+            .btn-group button { flex: 1; min-height: 38px; }
+            .info-bottom-row { gap: 12px; }
+            #difficultyRow { gap: 6px; padding: 10px; }
+            .diff-btn { padding: 6px 10px; }
+            #pveSideBox { flex-basis: 100%; margin: 5px 0 0; justify-content: center; }
+            #analysisPanel { padding: 16px 12px; }
+            #bottomBar { gap: 10px; }
+            .footer { padding-top: 16px; font-size: 10px; }
+            .keyboard-guide { gap: 6px 10px; }
+            .touch-guide { max-width: 300px; margin: 12px auto 8px; line-height: 1.9; }
+            .modal-overlay { padding: 14px; }
+            .modal-box { padding: 22px 18px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            button, .side-cap, .side-switch .knob, #aiProgressFill { transition: none; }
         }
     </style>
 </head>
 <body>
 <div class="game-container">
-    <h1>围 城</h1>
-    <div class="mode-select">
-        <button class="mode-btn" data-mode="pvp">👥 本地双人</button>
-        <button class="mode-btn active" data-mode="pve">🤖 人机对战</button>
-        <button class="mode-btn" data-mode="p2p">🌐 联机对战</button>
-    </div>
+    <header class="site-header">
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true"><i class="mark-red"></i><i class="mark-blue"></i></span>
+            <div>
+                <div class="eyebrow">每一步，皆是布局</div>
+                <h1>围城<span class="title-latin">SIEGE</span></h1>
+            </div>
+        </div>
+        <div class="header-aside">
+            <p>方寸之间，胜负由你</p>
+            <div class="header-meta">7 × 7 棋盘<b>·</b>1 v 1 策略博弈</div>
+        </div>
+    </header>
+    <nav class="mode-select" aria-label="对战模式">
+        <button class="mode-btn" data-mode="pvp"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M21 21v-3a6 6 0 0 0-4-5.65"/></svg>本地双人</button>
+        <button class="mode-btn active" data-mode="pve"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M2 12v4M22 12v4M9 16h6"/><circle cx="8.5" cy="12" r=".8"/><circle cx="15.5" cy="12" r=".8"/></svg>人机对战</button>
+        <button class="mode-btn" data-mode="p2p"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg>联机对战</button>
+    </nav>
     <div id="boardRow">
         <canvas id="wrBar" width="46" height="420" title="胜率（分析模型估值，己方视角，50% 均势）" style="display:none"></canvas>
         <div class="board-wrapper">
             <div class="coord coord-top" id="coordTop" aria-hidden="true"></div>
             <div class="coord coord-left" id="coordLeft" aria-hidden="true"></div>
-            <canvas id="boardCanvas" width="420" height="420"></canvas>
+            <canvas id="boardCanvas" width="420" height="420" role="img" aria-label="围城 7×7 对战棋盘"></canvas>
         </div>
         <canvas id="areaBar" width="46" height="420" title="期望最终面积差（己方视角，单位：格，中线 0）" style="display:none"></canvas>
         <aside id="analysisPanel">
@@ -670,11 +401,11 @@
             <div class="info-left">
                 <div class="info-item">
                     <span class="player-badge badge-red"></span>
-                    <span id="player1Label" style="color:#d13f3f;">玩家1</span>
+                    <span id="player1Label">玩家1</span>
                 </div>
                 <div class="info-item">
                     <span class="player-badge badge-blue"></span>
-                    <span id="player2Label" style="color:#3a6ea5;">玩家2</span>
+                    <span id="player2Label">玩家2</span>
                 </div>
                 <div class="info-item">
                     <span>步数</span>
@@ -688,12 +419,12 @@
         </div>
         <div id="p2pRoomPanel" class="p2p-room-panel" style="display:none;">
             <div class="p2p-row">
-                <input type="text" id="roomCodeInput" placeholder="输入房间码..." maxlength="5" style="background:#2f2a24;border:1px solid #6a5a42;border-radius:20px;padding:6px 14px;color:#eee;font-size:14px;width:130px;outline:none;text-transform:uppercase;">
+                <input type="text" id="roomCodeInput" placeholder="输入房间码..." maxlength="5" aria-label="房间码" autocomplete="off" spellcheck="false">
                 <button id="joinRoomBtn" class="btn-restart">➕ 加入</button>
                 <button id="createRoomBtn" class="btn-restart">🆕 创建房间</button>
                 <div class="side-box" id="p2pSideBox" style="display:none;">
                     <span class="side-cap red" data-cap="red">红方</span>
-                    <button class="side-switch" id="p2pSideSwitch" role="switch" aria-checked="false" title="切换先后手（双方同时换边）"><span class="knob"></span></button>
+                    <button class="side-switch" id="p2pSideSwitch" aria-label="切换联机对战执棋颜色" role="switch" aria-checked="false" title="切换先后手（双方同时换边）"><span class="knob"></span></button>
                     <span class="side-cap blue" data-cap="blue">蓝方</span>
                 </div>
             </div>
@@ -719,7 +450,7 @@
             <button class="diff-btn" data-diff="tongxuan">通玄</button>
             <div class="side-box" id="pveSideBox">
                 <span class="side-cap red on" data-cap="red">红方</span>
-                <button class="side-switch" id="pveSideSwitch" role="switch" aria-checked="false" title="切换先后手：蓝方=AI 先手"><span class="knob"></span></button>
+                <button class="side-switch" id="pveSideSwitch" aria-label="切换人机对战执棋颜色" role="switch" aria-checked="false" title="切换先后手：蓝方=AI 先手"><span class="knob"></span></button>
                 <span class="side-cap blue" data-cap="blue">蓝方</span>
             </div>
         </div>
@@ -731,8 +462,8 @@
     </div>
 
     <div id="aboutOverlay" class="modal-overlay" style="display:none;">
-        <div class="modal-box">
-            <h3>关于作者</h3>
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+            <h3 id="aboutTitle">关于作者</h3>
             <div class="modal-body">
                 <p>作者:玄灵</p>
                 <p>来自浙江大学，是一名AI专业大一学生</p>
@@ -752,11 +483,28 @@
         </div>
     </div>
 
-    <div class="footer">WASD移动 · J放墙准备 · 空格确认 · Q取消放墙
-        <br>手机端直接点击目标格移动 · 点击相邻格子选择放墙方向 · 再次点击确认
-        <br>随时点「复盘分析」：默认本模式最新一局，可切最近 3 局 · ←/→ 翻手 · Home/End 跳两端 · Esc 退出 · 「模拟着法」可从任一帧自己续走
-        <br>版本信息：Version 3.3.0 2026-11-10  感谢游玩~
-    </div>
+    <aside class="table-note" aria-label="对局提示">
+        <h2 class="note-title">落子 · 筑墙 · 围城</h2>
+        <p><strong>移动</strong><span>每回合至多 3 格，寻找更好的位置。</span></p>
+        <p><strong>筑墙</strong><span>沿格线封锁，逐步构建你的疆界。</span></p>
+        <p><strong>取胜</strong><span>双方分隔后，区域更大的一方获胜。</span></p>
+    </aside>
+    <footer class="footer">
+        <div class="keyboard-guide" aria-label="键盘操作">
+            <span><kbd>W A S D</kbd> 移动</span>
+            <span><kbd>J</kbd> 放墙准备</span>
+            <span><kbd>Space</kbd> 确认</span>
+            <span><kbd>Q</kbd> 取消放墙</span>
+        </div>
+        <p class="touch-guide">手机端点击目标格移动；点击相邻格选择墙向，再点一次确认。</p>
+        <details class="guide-details">
+            <summary>复盘分析 · 操作指南</summary>
+            <p>随时点「复盘分析」，默认打开本模式最新一局，可切换最近 3 局。<br>
+            <kbd>← / →</kbd> 翻手 · <kbd>Home / End</kbd> 开局与终局 · <kbd>Esc</kbd> 退出<br>
+            使用「模拟着法」，可从任一局面继续推演。</p>
+        </details>
+        <div class="site-footer">SIEGE <span>/</span> Version 3.3.1 · 2026-11-10 <span>/</span> 玄灵 · 感谢游玩</div>
+    </footer>
 </div>
 <script>
 (function() {
